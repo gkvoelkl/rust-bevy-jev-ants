@@ -1,0 +1,9 @@
+/target
+/internals
+# Secrets: never commit. The example file without a value is the only exception.
+.env
+.env.*
+!.env.example
+
+# JetBrains
+/.idea
