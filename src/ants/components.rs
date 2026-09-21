@@ -17,7 +17,17 @@ pub struct Facing(pub Dir);
 
 /// The fruit this ant carries, riding on its back. `None` means empty-handed.
 #[derive(Component, Default)]
-pub struct Carrying(pub Option<Entity>);
+pub struct Carrying {
+    pub fruit: Option<Entity>,
+}
+
+/// Steps since the ant last stood in the nest (`ANTS.md` §2.2).
+///
+/// The scent it lays shrinks with this number, which is what gives the trail a
+/// direction: strongest at the nest, faintest far out. Walking uphill is
+/// walking home.
+#[derive(Component, Default)]
+pub struct SinceNest(pub u32);
 
 /// What this ant last decided and how sure the model was. Only read by the
 /// debug layer — the simulation itself does not care.

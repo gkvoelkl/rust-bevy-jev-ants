@@ -8,9 +8,10 @@ use rand::seq::{IndexedRandom, SliceRandom};
 use crate::config::{ANT_COUNT, CELL_SIZE};
 use crate::decisions::{ThinkSet, ThinkTimer};
 use crate::world::grid::{Dir, Grid, GridPos, Occupancy, Occupant};
+use crate::world::nest::Nest;
 use crate::world::render::Z_ANT;
 
-use components::{AntId, Carrying, Facing, LastDecision};
+use components::{AntId, Carrying, Facing, LastDecision, SinceNest};
 
 pub const BODY: Color = Color::srgb(0.85, 0.42, 0.18);
 const HEAD: Color = Color::srgb(0.96, 0.72, 0.36);
@@ -33,17 +34,27 @@ impl Plugin for AntsPlugin {
     }
 }
 
-fn spawn_ants(mut commands: Commands, grid: Res<Grid>, mut occupancy: ResMut<Occupancy>) {
+fn spawn_ants(
+    mut commands: Commands,
+    grid: Res<Grid>,
+    nest: Res<Nest>,
+    mut occupancy: ResMut<Occupancy>,
+) {
     let grid = *grid;
     let mut rng = rand::rng();
 
-    // Only free cells, and each one only once: fruits may already be standing
-    // on the board, and no two ants may start on top of each other.
-    let mut cells: Vec<IVec2> = grid
-        .cells()
-        .filter(|cell| occupancy.is_free(grid, *cell))
-        .collect();
+    // The colony starts at home and has to leave the nest before it can do
+    // anything. Should there ever be more ants than nest cells, the rest start
+    // outside rather than going missing.
+    let mut cells: Vec<IVec2> = nest.cells().collect();
     cells.shuffle(&mut rng);
+
+    let mut outside: Vec<IVec2> = grid.cells().filter(|cell| !nest.contains(*cell)).collect();
+    outside.shuffle(&mut rng);
+    cells.extend(outside);
+
+    // Each cell only once, and only if nothing stands there already.
+    cells.retain(|cell| occupancy.is_free(grid, *cell));
 
     for (index, cell) in cells.into_iter().take(ANT_COUNT).enumerate() {
         let facing = *Dir::COMPASS.choose(&mut rng).expect("COMPASS is not empty");
@@ -56,6 +67,7 @@ fn spawn_ants(mut commands: Commands, grid: Res<Grid>, mut occupancy: ResMut<Occ
                 Facing(facing),
                 LastDecision::default(),
                 Carrying::default(),
+                SinceNest::default(),
                 Sprite::from_color(BODY, Vec2::new(CELL_SIZE * 0.34, CELL_SIZE * 0.56)),
                 Transform::from_translation(grid.to_screen(cell).extend(Z_ANT))
                     .with_rotation(Quat::from_rotation_z(facing.angle())),
@@ -73,11 +85,12 @@ fn spawn_ants(mut commands: Commands, grid: Res<Grid>, mut occupancy: ResMut<Occ
 mod tests {
     use super::*;
     use crate::config::FRUIT_TARGET;
-    use crate::decisions::DecisionsPlugin;
+    use crate::decisions::{DecisionsFrom, DecisionsPlugin};
     use crate::world::WorldPlugin;
     use crate::world::fruit::Fruit;
     use crate::world::grid::GridPos;
     use crate::world::nest::{Nest, Stores};
+    use crate::world::scent::Scent;
     use bevy::platform::collections::HashSet;
     use components::MoveAnim;
     use std::time::Duration;
@@ -89,7 +102,13 @@ mod tests {
         let mut app = App::new();
         // No TimePlugin on purpose — the test owns the clock.
         app.insert_resource(Time::<()>::default());
-        app.add_plugins((WorldPlugin, DecisionsPlugin::default(), AntsPlugin));
+        app.add_plugins((
+            WorldPlugin,
+            DecisionsPlugin {
+                source: DecisionsFrom::RulesForTesting,
+            },
+            AntsPlugin,
+        ));
         app.finish();
         app.cleanup();
 
@@ -142,14 +161,21 @@ mod tests {
         run_headless(3600, Duration::from_millis(50));
     }
 
-    /// The acceptance test for the intent layer: **without a model and without a
-    /// key**, the colony fetches fruit and carries it home. If this ever fails,
-    /// the game has stopped being playable on its own.
+    /// The acceptance test for the simulation: driven by the rule baseline —
+    /// never by the model — fruit gets fetched, carried and delivered. It
+    /// covers the classical half of the game: intents, pathfinding, pickup,
+    /// drop and the scent trail that makes the way home findable.
     #[test]
-    fn the_colony_brings_fruit_home_without_a_model() {
+    fn the_simulation_delivers_fruit_when_driven_by_rules() {
         let mut app = App::new();
         app.insert_resource(Time::<()>::default());
-        app.add_plugins((WorldPlugin, DecisionsPlugin::default(), AntsPlugin));
+        app.add_plugins((
+            WorldPlugin,
+            DecisionsPlugin {
+                source: DecisionsFrom::RulesForTesting,
+            },
+            AntsPlugin,
+        ));
         app.finish();
         app.cleanup();
         app.update();
@@ -182,11 +208,84 @@ mod tests {
         );
     }
 
+    /// The colony wakes up at home, and the first thing it has to do is get out.
+    #[test]
+    fn the_colony_starts_in_the_nest() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default());
+        app.add_plugins((
+            WorldPlugin,
+            DecisionsPlugin {
+                source: DecisionsFrom::RulesForTesting,
+            },
+            AntsPlugin,
+        ));
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let nest = *app.world().resource::<Nest>();
+        let mut ants = app.world_mut().query_filtered::<&GridPos, With<AntId>>();
+
+        let positions: Vec<IVec2> = ants.iter(app.world()).map(|position| position.0).collect();
+        assert_eq!(positions.len(), ANT_COUNT);
+        for position in &positions {
+            assert!(nest.contains(*position), "{position:?} is not the nest");
+        }
+        assert_eq!(
+            positions.iter().collect::<HashSet<_>>().len(),
+            ANT_COUNT,
+            "no two ants on one cell"
+        );
+    }
+
+    /// The trails are laid in the real loop, not only in the unit test: after
+    /// half a minute of carrying, the ground remembers where the fruit was.
+    #[test]
+    fn carrying_ants_leave_trails_behind() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default());
+        app.add_plugins((
+            WorldPlugin,
+            DecisionsPlugin {
+                source: DecisionsFrom::RulesForTesting,
+            },
+            AntsPlugin,
+        ));
+        app.finish();
+        app.cleanup();
+
+        for _ in 0..600 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_millis(50));
+            app.update();
+        }
+
+        let grid = *app.world().resource::<Grid>();
+        let scent = app.world().resource::<Scent>();
+        let scented = grid
+            .cells()
+            .filter(|cell| scent.at(grid, *cell) > 0.0)
+            .count();
+
+        assert!(
+            scented >= 10,
+            "only {scented} cells carry scent — nobody marked a way"
+        );
+    }
+
     #[test]
     fn every_ant_stays_on_the_board() {
         let mut app = App::new();
         app.insert_resource(Time::<()>::default());
-        app.add_plugins((WorldPlugin, DecisionsPlugin::default(), AntsPlugin));
+        app.add_plugins((
+            WorldPlugin,
+            DecisionsPlugin {
+                source: DecisionsFrom::RulesForTesting,
+            },
+            AntsPlugin,
+        ));
         app.finish();
         app.cleanup();
 

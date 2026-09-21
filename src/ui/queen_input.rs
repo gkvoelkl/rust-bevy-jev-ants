@@ -8,7 +8,6 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 
 use crate::config::REMEMBERED_ORDERS;
-use crate::decisions::QueenOrder;
 
 /// What is being typed but has not been said yet. Keeping it apart from
 /// `QueenOrder` means the colony does not react to every keystroke.
@@ -38,14 +37,26 @@ impl OrderHistory {
     }
 }
 
+/// What the queen did, if anything.
+pub enum OrderChange {
+    Say(String),
+    Silence,
+}
+
 /// The bar at the bottom. Takes the root `Ui` rather than making its own, so
 /// the HUD above and this panel lay out against the same space.
+///
+/// It **reads** the current order and reports a change rather than writing it.
+/// Writing through a `ResMut` every frame would mark the order as changed every
+/// frame, and every ant would then be asked again sixty times a second — which
+/// is exactly what happened before this was fixed.
 pub fn bottom_bar(
     ui: &mut egui::Ui,
     draft: &mut OrderDraft,
-    order: &mut QueenOrder,
+    order: &str,
     history: &mut OrderHistory,
-) {
+) -> Option<OrderChange> {
+    let mut change = None;
     egui::Panel::bottom("queen_order").show(ui, |ui| {
         ui.add_space(8.0);
 
@@ -65,7 +76,7 @@ pub fn bottom_bar(
             if (ui.button("Say").clicked() || entered) && !draft.0.trim().is_empty() {
                 let said = draft.0.trim().to_string();
                 history.remember(&said);
-                order.0 = said;
+                change = Some(OrderChange::Say(said));
                 draft.0.clear();
                 // Ready for the next order without reaching for the mouse.
                 field.request_focus();
@@ -73,15 +84,15 @@ pub fn bottom_bar(
 
             if ui.button("Say nothing").clicked() {
                 draft.0.clear();
-                order.0.clear();
+                change = Some(OrderChange::Silence);
             }
         });
 
         ui.add_space(4.0);
-        let status = if order.0.is_empty() {
+        let status = if order.is_empty() {
             "No order — every ant decides on its own.".to_string()
         } else {
-            format!("The colony has heard: \"{}\"", order.0)
+            format!("The colony has heard: \"{order}\"")
         };
         ui.label(egui::RichText::new(status).small());
 
@@ -95,4 +106,6 @@ pub fn bottom_bar(
 
         ui.add_space(8.0);
     });
+
+    change
 }

@@ -63,10 +63,12 @@ The Bevy version is not chosen yet. The neighbouring repos under `~/Desktop/git/
 4. **The `choice` options are generated at runtime from what the ant can see, never
    hardcoded.** This is what stops Jev from picking a target that does not exist — the
    type-safety benefit and the core of the demo.
-5. **Three equal decision sources** (`jev` live, `replay`, `classic`) behind one
-   `DecisionSource` trait, not as a special case in the code. The "with Jev / without Jev"
-   toggle is the demo's strongest argument; `classic` doubles as the fallback on low
-   confidence, network failure, or a missing key.
+5. **Decision sources sit behind one `DecisionSource` trait**, not as special cases in the
+   code. But there is **no fallback**: the game exists to show what Jev decides, so when a
+   request fails the ant simply does not act this round, and without a key nothing moves
+   at all. Discarded answers are counted and shown. The rule-based source survives only as
+   a test baseline (offline tests, `--compare`) — `DecisionsFrom` has no `Default` so a
+   test cannot quietly hit the live API. Amended 2026-09-21; see `internals/ANTS.md` §3.2.
 6. **Question texts are an asset, not code.** `instructions` and `criteria` live in
    `assets/questions.ron` and are reloaded at runtime — rewording without recompiling.
    Refining those texts is the actual development effort.

@@ -7,10 +7,12 @@
 
 use bevy::prelude::*;
 
+use crate::config::VISION_RADIUS;
 use crate::decisions::ThinkTimer;
 use crate::world::fruit::Fruit;
 use crate::world::grid::{Dir, Grid, GridPos, Occupancy};
 use crate::world::nest::{Nest, Stores};
+use crate::world::scent::Scent;
 
 use super::components::{Carrying, Facing, MoveAnim};
 use super::movement::{ON_THE_BACK, start_step};
@@ -24,6 +26,20 @@ pub enum Intent {
     Fetch(Entity),
     /// Carry what you hold to the nest and put it down.
     CarryHome,
+    /// Follow the scent uphill, which is the way home. No direction is kept:
+    /// the slope is read again at every step, because a trail bends and the one
+    /// the model named is only its start.
+    FollowScent { left: i32 },
+}
+
+/// What the intents work on. Grouped to keep the signature readable.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct BoardParts<'w> {
+    grid: Res<'w, Grid>,
+    nest: Res<'w, Nest>,
+    occupancy: ResMut<'w, Occupancy>,
+    stores: ResMut<'w, Stores>,
+    scent: Res<'w, Scent>,
 }
 
 /// The ants pursuing something, one step per finished step animation.
@@ -43,18 +59,54 @@ type Busy<'w, 's> = Query<
 
 pub fn pursue_intents(
     mut commands: Commands,
-    grid: Res<Grid>,
-    nest: Res<Nest>,
-    mut occupancy: ResMut<Occupancy>,
-    mut stores: ResMut<Stores>,
+    board: BoardParts,
     mut ants: Busy,
     fruits: Query<&GridPos, With<Fruit>>,
 ) {
+    let BoardParts {
+        grid,
+        nest,
+        mut occupancy,
+        mut stores,
+        scent,
+    } = board;
     let grid = *grid;
     let nest = *nest;
 
     for (entity, position, mut facing, mut carrying, mut timer, mut intent) in &mut ants {
         match *intent {
+            Intent::FollowScent { left } => {
+                // Home in sight: from here the ant walks straight there, which
+                // is the next decision rather than this one.
+                if nest.within(position.0, VISION_RADIUS) {
+                    done(&mut commands, entity, &mut timer);
+                    continue;
+                }
+
+                // The slope is read again every step — the trail may bend.
+                let Some((uphill, _)) = scent.uphill(grid, position.0) else {
+                    // The peak, or the trail has faded under it. Either way the
+                    // ant has to decide anew.
+                    done(&mut commands, entity, &mut timer);
+                    continue;
+                };
+
+                let walked = start_step(
+                    &mut commands,
+                    &mut occupancy,
+                    grid,
+                    entity,
+                    position.0,
+                    uphill,
+                    &mut facing,
+                );
+                if !walked || left <= 1 {
+                    done(&mut commands, entity, &mut timer);
+                } else {
+                    *intent = Intent::FollowScent { left: left - 1 };
+                }
+            }
+
             Intent::Walk { dir, left } => {
                 let walked = start_step(
                     &mut commands,
@@ -88,7 +140,7 @@ pub fn pursue_intents(
 
                 if next_to(position.0, target.0) {
                     occupancy.vacate(grid, target.0, fruit);
-                    carrying.0 = Some(fruit);
+                    carrying.fruit = Some(fruit);
                     facing.0 = Dir::nearest(target.0 - position.0);
                     // The fruit leaves the board and rides along.
                     commands
@@ -110,14 +162,14 @@ pub fn pursue_intents(
             }
 
             Intent::CarryHome => {
-                let Some(fruit) = carrying.0 else {
+                let Some(fruit) = carrying.fruit else {
                     done(&mut commands, entity, &mut timer);
                     continue;
                 };
 
                 if nest.contains(position.0) {
                     stores.0 += 1;
-                    carrying.0 = None;
+                    carrying.fruit = None;
                     commands.entity(fruit).despawn();
                     done(&mut commands, entity, &mut timer);
                 } else {
@@ -183,12 +235,13 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::ants::components::AntId;
+    use crate::ants::components::{AntId, SinceNest};
     use crate::ants::movement::{animate_steps, apply_decisions};
     use crate::decisions::{
         Action, ActiveSource, AntMove, AntView, DecisionSource, DecisionStats, Origin,
     };
     use crate::world::grid::Occupant;
+    use crate::world::scent::Scent;
 
     /// A source the test writes into, so the sequence of decisions is exact
     /// instead of waited for.
@@ -222,6 +275,7 @@ mod tests {
         app.insert_resource(Time::<()>::default())
             .insert_resource(grid)
             .insert_resource(Occupancy::new(grid))
+            .insert_resource(crate::world::scent::Scent::new(grid))
             .init_resource::<Nest>()
             .init_resource::<Stores>()
             .init_resource::<DecisionStats>()
@@ -238,6 +292,7 @@ mod tests {
                 GridPos(ant_at),
                 Facing(Dir::North),
                 Carrying::default(),
+                SinceNest::default(),
                 crate::ants::components::LastDecision::default(),
                 ThinkTimer::staggered(0, 1),
                 Transform::default(),
@@ -269,7 +324,7 @@ mod tests {
                 .push(AntMove {
                     id: AntId(0),
                     action,
-                    origin: Origin::Classic,
+                    origin: Origin::Rules,
                 });
         }
 
@@ -289,7 +344,7 @@ mod tests {
                 .world()
                 .get::<Carrying>(self.ant)
                 .expect("the ant has the component")
-                .0
+                .fruit
         }
 
         fn busy(&self) -> bool {
@@ -340,6 +395,68 @@ mod tests {
         assert!(
             fixture.app.world().get_entity(fixture.fruit).is_err(),
             "the fruit is eaten, not lying around"
+        );
+    }
+
+    /// The point of the pheromones: a laden ant finds its way home to a nest it
+    /// cannot see, by walking up the trail the colony laid on its way out.
+    #[test]
+    fn a_trail_leads_home_to_a_nest_out_of_sight() {
+        let nest = Nest::default();
+        let ant_at = IVec2::new(20, 12);
+        let mut fixture = fixture(ant_at, ant_at + IVec2::Y);
+        let grid = *fixture.app.world().resource::<Grid>();
+
+        assert!(
+            !nest.within(ant_at, VISION_RADIUS),
+            "the nest must be out of sight, or the test proves nothing"
+        );
+
+        // Pick the fruit up first — the trail is only offered to a carrier.
+        fixture.decide(Action::Fetch {
+            fruit: fixture.fruit,
+            dir: Dir::North,
+            distance: 1,
+        });
+        fixture.run(0.5);
+        assert!(fixture.carrying().is_some(), "picked it up");
+
+        {
+            // The way out, as a searching ant would have marked it: faintest far
+            // from the nest, strongest close to it.
+            let mut scent = fixture.app.world_mut().resource_mut::<Scent>();
+            for (steps, cell) in [
+                IVec2::new(19, 12),
+                IVec2::new(18, 11),
+                IVec2::new(17, 11),
+                IVec2::new(16, 10),
+                IVec2::new(15, 10),
+                IVec2::new(14, 9),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, cell)| (5 - index as u32, cell))
+            {
+                scent.deposit(grid, cell, steps);
+            }
+        }
+
+        fixture.decide(Action::FollowScent(Dir::West));
+        fixture.run(3.0);
+
+        let position = fixture
+            .app
+            .world()
+            .get::<GridPos>(fixture.ant)
+            .expect("the ant still has a cell")
+            .0;
+        assert!(
+            nest.within(position, VISION_RADIUS),
+            "followed the trail to {position:?} and still cannot see home"
+        );
+        assert!(
+            !fixture.busy(),
+            "the intent ends when the nest comes in sight"
         );
     }
 

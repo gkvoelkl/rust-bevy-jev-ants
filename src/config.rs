@@ -1,12 +1,14 @@
 //! Everything that is meant to be tuned lives here, never inline in a system.
 
-/// Board width in cells. Odd on purpose, so the nest sits exactly in the middle.
-pub const GRID_WIDTH: i32 = 25;
-/// Board height in cells. Odd for the same reason.
-pub const GRID_HEIGHT: i32 = 17;
+/// Board width in cells. Even on purpose: the nest has an even edge too, and
+/// only then does it sit exactly in the middle rather than half a cell off.
+pub const GRID_WIDTH: i32 = 24;
+/// Board height in cells. Even for the same reason.
+pub const GRID_HEIGHT: i32 = 16;
 
-/// Edge length of the nest, a square in the centre of the board.
-pub const NEST_SIZE: i32 = 3;
+/// Edge length of the nest, a square in the centre of the board. Sixteen cells,
+/// which is where the colony starts out — with a little room to spare.
+pub const NEST_SIZE: i32 = 4;
 
 /// How many fruits the board is kept topped up to.
 pub const FRUIT_TARGET: usize = 14;
@@ -15,7 +17,9 @@ pub const FRUIT_REGROWTH: f32 = 4.0;
 /// Edge length of one cell in pixels.
 pub const CELL_SIZE: f32 = 32.0;
 
-/// How many ants the colony starts with.
+/// How many ants the colony starts with. They all begin inside the nest and
+/// have to leave it first; the four spare cells keep them from being wedged in
+/// at the very first tick.
 pub const ANT_COUNT: usize = 12;
 
 /// Upper bound between two decisions for one ant. Not the normal case: an ant
@@ -64,3 +68,18 @@ pub const MIN_CONFIDENCE: f32 = 0.22;
 
 /// How many past orders the input bar keeps on screen.
 pub const REMEMBERED_ORDERS: usize = 5;
+
+/// How much scent a fresh carrier leaves on a cell.
+pub const SCENT_DEPOSIT: f32 = 1.0;
+
+/// What is left of that with every further step since the fruit was picked up.
+/// This is what makes a trail point somewhere: the scent is strongest where the
+/// fruit was, so walking uphill leads to the food.
+pub const SCENT_STEP_DECAY: f32 = 0.88;
+
+/// Seconds for a trail to fade to half. Evaporation is not decoration — it is
+/// how the colony forgets a source that has run dry.
+pub const SCENT_HALF_LIFE: f32 = 25.0;
+
+/// Below this a cell counts as unscented, so old trails stop being offered.
+pub const SCENT_THRESHOLD: f32 = 0.05;

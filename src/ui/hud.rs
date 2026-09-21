@@ -58,8 +58,8 @@ pub fn top_bar(
             ui.label(format!("Deciding: {source}"));
             ui.separator();
             ui.label(format!(
-                "{} steps from Jev, {} classic",
-                stats.from_jev, stats.from_classic
+                "{} decisions from Jev, {} discarded",
+                stats.from_jev, stats.discarded
             ));
             ui.separator();
             ui.label(format!("{} ms average", stats.average_latency_ms()));

@@ -10,9 +10,9 @@
 //! the frame loop never waits. In step 1 there are two sources; replay and the
 //! classic rules dock onto the same trait later.
 
-pub mod classic;
 pub mod jev;
 pub mod options;
+pub mod rules;
 
 use std::time::Duration;
 
@@ -24,6 +24,7 @@ use crate::api::Client;
 use crate::config::{THINK_INTERVAL, VISION_RADIUS};
 use crate::world::grid::{Dir, Grid, GridPos, Occupancy};
 use crate::world::nest::Nest;
+use crate::world::scent::Scent;
 use crate::world::vision::sightings;
 
 /// What an ant can decide to do. Two of these are **intents**, not steps: the
@@ -52,6 +53,9 @@ pub enum Action {
     /// Carry what you hold back to the nest and put it down. Only offered to an
     /// ant that is carrying something.
     CarryHome,
+    /// Follow somebody else's trail uphill, towards where they picked fruit up.
+    /// Only offered when there really is a trail next door.
+    FollowScent(Dir),
 }
 
 impl Action {
@@ -64,6 +68,7 @@ impl Action {
             Action::Wait => "stay".to_string(),
             Action::Fetch { dir, .. } => format!("fetch_{}", dir.key()),
             Action::CarryHome => "carry_home".to_string(),
+            Action::FollowScent(direction) => format!("follow_scent_{}", direction.key()),
         }
     }
 
@@ -78,6 +83,10 @@ impl Action {
                 format!("Fetch the fruit {distance} {cells} to the {}", dir.spoken())
             }
             Action::CarryHome => "Carry the fruit back to the nest".to_string(),
+            Action::FollowScent(direction) => format!(
+                "Follow the scent trail {} — another ant carried fruit along it",
+                direction.spoken()
+            ),
         }
     }
 
@@ -88,6 +97,7 @@ impl Action {
             Action::Wait => "wait".to_string(),
             Action::Fetch { dir, .. } => format!("fetch {}", dir.spoken()),
             Action::CarryHome => "home".to_string(),
+            Action::FollowScent(direction) => format!("scent {}", direction.spoken()),
         }
     }
 }
@@ -121,8 +131,8 @@ pub enum Origin {
         latency_ms: u32,
         input_tokens: u32,
     },
-    /// The pheromone rules. No model, no cost.
-    Classic,
+    /// The rule baseline. Never happens while playing.
+    Rules,
 }
 
 pub trait DecisionSource: Send + Sync {
@@ -133,6 +143,12 @@ pub trait DecisionSource: Send + Sync {
     fn poll(&mut self) -> Vec<AntMove>;
     /// For the HUD, so the player can see what is steering the colony.
     fn name(&self) -> &'static str;
+    /// Answers thrown away and questions that never went out. Shown rather than
+    /// hidden: with nothing standing in for the model, a discarded answer means
+    /// an ant did not act, and that should be visible.
+    fn discarded(&self) -> u32 {
+        0
+    }
 }
 
 /// What the colony has cost and how fast it thinks. Fed by every decision that
@@ -140,7 +156,12 @@ pub trait DecisionSource: Send + Sync {
 #[derive(Resource, Default)]
 pub struct DecisionStats {
     pub from_jev: u32,
-    pub from_classic: u32,
+    /// Answers thrown away: too unsure, or naming something that was never
+    /// offered. Counted and shown, because a discarded answer is a fact about
+    /// the model and not something to hide.
+    pub discarded: u32,
+    /// Decisions from the rule baseline. Zero while playing.
+    pub from_rules: u32,
     latency_sum_ms: u64,
     pub input_tokens: u64,
 }
@@ -157,7 +178,7 @@ impl DecisionStats {
                 self.latency_sum_ms += u64::from(*latency_ms);
                 self.input_tokens += u64::from(*input_tokens);
             }
-            Origin::Classic => self.from_classic += 1,
+            Origin::Rules => self.from_rules += 1,
         }
     }
 
@@ -219,35 +240,40 @@ impl ThinkTimer {
 #[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ThinkSet;
 
-/// Which source the game runs on. `Classic` never touches the network, which is
-/// also what keeps the tests offline.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum SourceKind {
-    #[default]
-    Classic,
-    /// Falls back to the classic rules when there is no key.
+/// Where decisions come from.
+///
+/// No `Default` on purpose. A default would have made `DecisionsPlugin::default()`
+/// in a test quietly fire real requests at the live API.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DecisionsFrom {
+    /// The live model. This is the game; without a key the colony sleeps.
     Jev,
+    /// Plain rules. **Not a way to play** — only the offline tests and the
+    /// measurement baseline ask for this.
+    RulesForTesting,
 }
 
-#[derive(Default)]
 pub struct DecisionsPlugin {
-    pub source: SourceKind,
+    pub source: DecisionsFrom,
 }
 
 impl Plugin for DecisionsPlugin {
     fn build(&self, app: &mut App) {
         let source: Box<dyn DecisionSource> = match self.source {
-            SourceKind::Jev => match Client::from_env() {
+            DecisionsFrom::Jev => match Client::from_env() {
                 Some(client) => {
                     info!("decisions come from Jev");
                     Box::new(jev::JevSource::new(client))
                 }
                 None => {
-                    warn!("no TYPESAFE_API_KEY — the colony runs on the classic rules");
-                    Box::new(classic::ClassicSource::default())
+                    // No stand-in on purpose. A colony that kept working on
+                    // rules would hide what the model contributes, and this
+                    // game exists to show exactly that.
+                    warn!("no TYPESAFE_API_KEY — the colony will not move");
+                    Box::new(Asleep)
                 }
             },
-            SourceKind::Classic => Box::new(classic::ClassicSource::default()),
+            DecisionsFrom::RulesForTesting => Box::new(rules::RuleSource::default()),
         };
 
         app.insert_resource(ActiveSource(source))
@@ -287,12 +313,9 @@ fn request_decisions(
 
     for (id, position, carrying, mut timer, walking, intent) in &mut ants {
         let due = timer.0.tick(time.delta()).just_finished();
-        if new_order {
-            timer.ask_now();
-        } else if !due {
+        if !due && !new_order {
             continue;
         }
-
         if walking.is_some() {
             continue; // mid-step; it will be asked again next round
         }
@@ -302,6 +325,10 @@ fn request_decisions(
             continue;
         }
 
+        // Asked — so the interval starts over. Without this an ant asks again
+        // on the very next frame.
+        timer.0.reset();
+
         source.0.request(&AntView {
             id: *id,
             order: &order.0,
@@ -309,12 +336,20 @@ fn request_decisions(
                 grid,
                 &board.occupancy,
                 nest,
+                &board.scent,
                 position.0,
-                carrying.0.is_some(),
+                carrying.fruit.is_some(),
                 VISION_RADIUS,
             ),
-            sightings: sightings(grid, &board.occupancy, nest, position.0, VISION_RADIUS),
-            carrying: carrying.0.is_some(),
+            sightings: sightings(
+                grid,
+                &board.occupancy,
+                nest,
+                &board.scent,
+                position.0,
+                VISION_RADIUS,
+            ),
+            carrying: carrying.fruit.is_some(),
         });
     }
 }
@@ -325,4 +360,25 @@ struct BoardRead<'w> {
     grid: Res<'w, Grid>,
     nest: Res<'w, Nest>,
     occupancy: Res<'w, Occupancy>,
+    scent: Res<'w, Scent>,
+}
+
+/// No key, no answers. The colony stands still, and the bar at the top says so.
+///
+/// This is deliberate: the game exists to show what Jev decides, so without Jev
+/// nothing decides. Rules that quietly took over would hide the very thing one
+/// came to look at.
+#[derive(Default)]
+pub struct Asleep;
+
+impl DecisionSource for Asleep {
+    fn request(&mut self, _ant: &AntView<'_>) {}
+
+    fn poll(&mut self) -> Vec<AntMove> {
+        Vec::new()
+    }
+
+    fn name(&self) -> &'static str {
+        "nobody — no API key"
+    }
 }

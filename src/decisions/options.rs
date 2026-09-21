@@ -9,6 +9,7 @@ use bevy::prelude::*;
 
 use crate::world::grid::{Dir, Grid, Occupancy, Occupant, free_directions};
 use crate::world::nest::Nest;
+use crate::world::scent::Scent;
 
 use super::Action;
 
@@ -18,6 +19,7 @@ pub fn available(
     grid: Grid,
     occupancy: &Occupancy,
     nest: Nest,
+    scent: &Scent,
     at: IVec2,
     carrying: bool,
     radius: i32,
@@ -25,23 +27,34 @@ pub fn available(
     let mut options = Vec::new();
 
     if carrying {
-        // An ant knows the way home even when it cannot see the nest — real
-        // ones navigate by path integration. Fruit, on the other hand, has to
-        // be seen to be fetched.
-        options.push(Action::CarryHome);
+        // Home has to be found, not assumed. Walking straight there is only an
+        // option while the nest is in sight; otherwise the ant is on the scent
+        // trail or on its own.
+        if nest.within(at, radius) {
+            options.push(Action::CarryHome);
+        }
+
+        // At most one: the slope has one direction, and offering several would
+        // be inventing them. Uphill is the way home.
+        if let Some((direction, _)) = scent.uphill(grid, at) {
+            options.push(Action::FollowScent(direction));
+        }
     } else {
+        // Food is found by eye. The trail leads home, which is of no use to an
+        // ant with empty hands, so it is not offered.
         options.extend(fruits_in_sight(grid, occupancy, at, radius));
     }
 
-    options.extend(
-        free_directions(grid, occupancy, at)
-            .into_iter()
-            .filter(|direction| *direction != Dir::Stay)
-            .map(Action::Walk),
-    );
-    options.push(Action::Wait);
+    let ways_out = free_directions(grid, occupancy, at);
+    if ways_out.is_empty() {
+        // Wedged in by neighbours. Now standing still is not a choice, it is
+        // the only thing left, and it has to be on the list — an empty choice
+        // would be a request with no answer.
+        options.push(Action::Wait);
+    } else {
+        options.extend(ways_out.into_iter().map(Action::Walk));
+    }
 
-    let _ = nest; // the nest only matters for CarryHome, which needs no cell
     options
 }
 
@@ -127,7 +140,15 @@ mod tests {
         let (grid, mut occupancy, nest) = setup();
         occupancy.occupy(grid, IVec2::new(1, 3), fruit(1));
 
-        let options = available(grid, &occupancy, nest, IVec2::new(1, 1), false, 3);
+        let options = available(
+            grid,
+            &occupancy,
+            nest,
+            &Scent::new(grid),
+            IVec2::new(1, 1),
+            false,
+            3,
+        );
         assert_eq!(
             fetches(&options),
             vec![Action::Fetch {
@@ -143,7 +164,15 @@ mod tests {
         let (grid, mut occupancy, nest) = setup();
         occupancy.occupy(grid, IVec2::new(1, 6), fruit(1));
 
-        let options = available(grid, &occupancy, nest, IVec2::new(1, 1), false, 3);
+        let options = available(
+            grid,
+            &occupancy,
+            nest,
+            &Scent::new(grid),
+            IVec2::new(1, 1),
+            false,
+            3,
+        );
         assert!(fetches(&options).is_empty());
     }
 
@@ -155,7 +184,15 @@ mod tests {
         occupancy.occupy(grid, IVec2::new(1, 2), fruit(1));
         occupancy.occupy(grid, IVec2::new(1, 4), fruit(2));
 
-        let options = available(grid, &occupancy, nest, IVec2::new(1, 1), false, 3);
+        let options = available(
+            grid,
+            &occupancy,
+            nest,
+            &Scent::new(grid),
+            IVec2::new(1, 1),
+            false,
+            3,
+        );
         let offered = fetches(&options);
         assert_eq!(offered.len(), 1);
         assert_eq!(
@@ -170,28 +207,64 @@ mod tests {
 
     /// Two hands, one load: a carrying ant is offered the way home, not more
     /// fruit.
+    /// Two hands, one load: a carrying ant is offered no more fruit.
     #[test]
-    fn a_carrying_ant_is_offered_the_way_home_and_no_fruit() {
+    fn a_carrying_ant_is_offered_no_fruit() {
         let (grid, mut occupancy, nest) = setup();
         occupancy.occupy(grid, IVec2::new(1, 2), fruit(1));
 
-        let options = available(grid, &occupancy, nest, IVec2::new(1, 1), true, 3);
-        assert!(options.contains(&Action::CarryHome));
+        let options = available(
+            grid,
+            &occupancy,
+            nest,
+            &Scent::new(grid),
+            IVec2::new(1, 1),
+            true,
+            3,
+        );
         assert!(fetches(&options).is_empty());
     }
 
     #[test]
     fn an_empty_handed_ant_is_never_offered_the_way_home() {
         let (grid, occupancy, nest) = setup();
-        let options = available(grid, &occupancy, nest, IVec2::new(1, 1), false, 3);
+        let options = available(
+            grid,
+            &occupancy,
+            nest,
+            &Scent::new(grid),
+            IVec2::new(1, 1),
+            false,
+            3,
+        );
         assert!(!options.contains(&Action::CarryHome));
     }
 
-    /// Standing still is always on the list, so there is never an empty choice.
+    /// Standing still is offered only when there is genuinely nothing else.
+    ///
+    /// It used to be on every list, and the colony paid for it: twelve ants
+    /// waking up in a four-by-four nest have few free neighbours, so `wait` was
+    /// one of two or three options and the model picked it about half the time.
+    /// Nobody left the nest. An idle ant standing still is never the right
+    /// answer in this game — until tiredness exists and resting becomes a real
+    /// choice again.
     #[test]
-    fn standing_still_is_always_offered() {
-        let (grid, occupancy, nest) = setup();
-        let options = available(grid, &occupancy, nest, IVec2::new(1, 1), false, 3);
-        assert!(options.contains(&Action::Wait));
+    fn standing_still_is_the_last_resort_only() {
+        let (grid, mut occupancy, nest) = setup();
+        let at = IVec2::new(1, 1);
+
+        let options = available(grid, &occupancy, nest, &Scent::new(grid), at, false, 3);
+        assert!(!options.contains(&Action::Wait), "there are ways out");
+
+        // Wall it in completely.
+        for direction in Dir::COMPASS {
+            occupancy.occupy(
+                grid,
+                at + direction.offset(),
+                Occupant::Ant(Entity::from_raw_u32(100).unwrap()),
+            );
+        }
+        let boxed_in = available(grid, &occupancy, nest, &Scent::new(grid), at, false, 3);
+        assert_eq!(boxed_in, vec![Action::Wait], "nothing else is possible");
     }
 }

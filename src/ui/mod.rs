@@ -10,7 +10,7 @@ use crate::decisions::{ActiveSource, DecisionStats, QueenOrder};
 use crate::world::fruit::Fruit;
 use crate::world::nest::Stores;
 
-use queen_input::{OrderDraft, OrderHistory};
+use queen_input::{OrderChange, OrderDraft, OrderHistory};
 
 /// Intent and confidence over every ant. On by default — it is the whole point
 /// of the demo. F3 toggles it: a key that never lands in the text field.
@@ -86,12 +86,19 @@ fn draw(
         colony.stores.0,
         colony.fruits.iter().count(),
     );
-    queen_input::bottom_bar(
+    // The order is read here and only written when it really changed — see the
+    // note on `bottom_bar`.
+    let change = queen_input::bottom_bar(
         &mut viewport,
         &mut orders.draft,
-        &mut orders.order,
+        &orders.order.0,
         &mut orders.history,
     );
+    match change {
+        Some(OrderChange::Say(said)) => orders.order.0 = said,
+        Some(OrderChange::Silence) => orders.order.0.clear(),
+        None => {}
+    }
 
     if layer.0 {
         hud::intent_overlay(&mut viewport, ctx.viewport_rect().center(), &ants);

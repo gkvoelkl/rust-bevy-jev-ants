@@ -225,13 +225,12 @@ impl Occupancy {
 }
 
 /// The directions this ant could step into right now — inside the board and
-/// unoccupied — plus standing still. A blocked direction is never offered, which
-/// is what later keeps Jev from naming an impossible move.
+/// unoccupied. A blocked direction is never offered, which is what keeps Jev
+/// from naming an impossible move. Standing still is not a direction; it is
+/// `Action::Wait`, and `options::available` decides when it is worth offering.
 pub fn free_directions(grid: Grid, occupancy: &Occupancy, from: IVec2) -> Vec<Dir> {
-    let mut options: Vec<Dir> = Dir::COMPASS
+    Dir::COMPASS
         .into_iter()
         .filter(|dir| occupancy.is_free(grid, from + dir.offset()))
-        .collect();
-    options.push(Dir::Stay);
-    options
+        .collect()
 }

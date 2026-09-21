@@ -4,8 +4,11 @@ use bevy::prelude::*;
 use crate::config::{STEP_DURATION, WANDER_CELLS};
 use crate::decisions::{Action, ActiveSource, DecisionStats, Origin};
 use crate::world::grid::{Dir, Grid, GridPos, Occupancy, Occupant};
+use crate::world::scent::Scent;
 
-use super::components::{AntId, Facing, LastDecision, MoveAnim};
+use crate::world::nest::Nest;
+
+use super::components::{AntId, Carrying, Facing, LastDecision, MoveAnim, SinceNest};
 use super::intent::Intent;
 
 /// Where a carried fruit sits: on the ant's back, just behind its middle. The
@@ -58,6 +61,8 @@ pub fn apply_decisions(
     mut stats: ResMut<DecisionStats>,
     mut ants: ReadyAnts,
 ) {
+    stats.discarded = source.0.discarded();
+
     let mut moves = source.0.poll();
     if moves.is_empty() {
         return;
@@ -83,7 +88,7 @@ pub fn apply_decisions(
         last.action = Some(ant_move.action);
         last.confidence = match ant_move.origin {
             Origin::Jev { confidence, .. } => Some(confidence),
-            Origin::Classic => None,
+            Origin::Rules => None,
         };
 
         match ant_move.action {
@@ -102,6 +107,13 @@ pub fn apply_decisions(
             Action::CarryHome => {
                 commands.entity(entity).insert(Intent::CarryHome);
             }
+            Action::FollowScent(_) => {
+                // The direction is not carried over: the intent reads the slope
+                // again at every step.
+                commands
+                    .entity(entity)
+                    .insert(Intent::FollowScent { left: WANDER_CELLS });
+            }
         }
     }
 }
@@ -110,11 +122,21 @@ pub fn animate_steps(
     mut commands: Commands,
     time: Res<Time>,
     grid: Res<Grid>,
+    nest: Res<Nest>,
     mut occupancy: ResMut<Occupancy>,
-    mut ants: Query<(Entity, &mut MoveAnim, &mut GridPos, &mut Transform)>,
+    mut scent: ResMut<Scent>,
+    mut ants: Query<(
+        Entity,
+        &mut MoveAnim,
+        &mut GridPos,
+        &mut Transform,
+        &Carrying,
+        &mut SinceNest,
+    )>,
 ) {
     let grid = *grid;
-    for (entity, mut anim, mut position, mut transform) in &mut ants {
+    let nest = *nest;
+    for (entity, mut anim, mut position, mut transform, carrying, mut since_nest) in &mut ants {
         anim.t = (anim.t + time.delta_secs() / STEP_DURATION).min(1.0);
 
         let from = grid.to_screen(anim.from);
@@ -127,6 +149,21 @@ pub fn animate_steps(
         if anim.t >= 1.0 {
             occupancy.vacate(grid, anim.from, entity);
             position.0 = anim.to;
+
+            // How far from home, counted in steps. Standing in the nest resets
+            // it — that is where the trail is strongest.
+            if nest.contains(anim.to) {
+                since_nest.0 = 0;
+            } else {
+                since_nest.0 += 1;
+            }
+
+            // Only a searching ant marks the ground; a carrier has its hands
+            // full and follows what was laid on the way out.
+            if carrying.fruit.is_none() {
+                scent.deposit(grid, anim.to, since_nest.0);
+            }
+
             commands.entity(entity).remove::<MoveAnim>();
         }
     }

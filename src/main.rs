@@ -6,13 +6,15 @@ mod ui;
 mod world;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod compare;
+#[cfg(not(target_arch = "wasm32"))]
 mod measure;
 #[cfg(not(target_arch = "wasm32"))]
 mod probe;
 
 use bevy::prelude::*;
 
-use decisions::{DecisionsPlugin, QueenOrder, SourceKind};
+use decisions::{DecisionsFrom, DecisionsPlugin, QueenOrder};
 use ui::queen_input::OrderHistory;
 
 fn main() {
@@ -21,6 +23,13 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     if std::env::args().any(|argument| argument == "--probe") {
         probe::run();
+        return;
+    }
+
+    // `cargo run -- --compare [jev]` measures whether the pheromones pay off.
+    #[cfg(not(target_arch = "wasm32"))]
+    if std::env::args().any(|argument| argument == "--compare") {
+        compare::run(std::env::args().any(|argument| argument == "jev"));
         return;
     }
 
@@ -49,7 +58,7 @@ fn main() {
         .add_plugins((
             world::WorldPlugin,
             DecisionsPlugin {
-                source: SourceKind::Jev,
+                source: DecisionsFrom::Jev,
             },
             ants::AntsPlugin,
             ui::UiPlugin,

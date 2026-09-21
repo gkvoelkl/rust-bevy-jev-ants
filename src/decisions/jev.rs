@@ -15,7 +15,6 @@ use crate::api::types::{Answer, MODEL, Question, SystemOneRequest, SystemOneResp
 use crate::api::{Client, Pending, REQUEST_TIMEOUT};
 use crate::config::{MAX_IN_FLIGHT, MIN_CONFIDENCE, VISION_RADIUS};
 
-use super::classic::ClassicSource;
 use super::{Action, AntMove, AntView, DecisionSource, Origin};
 
 /// The question key. One question in step 1; `urgency` and `follows_order`
@@ -33,7 +32,6 @@ struct InFlight {
     /// Exactly the options this ant was offered. An answer is checked against
     /// this list, so an action that was never offered can never be carried out.
     offered: Vec<Action>,
-    carrying: bool,
     pending: Pending,
     /// Insurance against a callback that never fires; `ehttp` already times out.
     deadline: Instant,
@@ -42,8 +40,9 @@ struct InFlight {
 pub struct JevSource {
     client: Client,
     in_flight: Vec<InFlight>,
-    /// What a single ant falls back to when the model cannot answer for it.
-    classic: ClassicSource,
+    /// Answers thrown away, and questions that never went out. Reported rather
+    /// than papered over — there is nothing standing in for the model.
+    discarded: u32,
 }
 
 impl JevSource {
@@ -51,26 +50,27 @@ impl JevSource {
         Self {
             client,
             in_flight: Vec::new(),
-            classic: ClassicSource::default(),
+            discarded: 0,
         }
     }
 
-    fn fall_back(&mut self, ant: AntId, offered: Vec<Action>, carrying: bool) {
-        self.classic.request(&AntView {
-            id: ant,
-            order: "",
-            options: offered,
-            sightings: Vec::new(),
-            carrying,
-        });
+    /// Whatever went wrong, the ant simply does not act this round and is asked
+    /// again when its interval comes round. Nothing decides in the model's
+    /// place — that is the point of this game.
+    fn discard(&mut self, ant: AntId, reason: &str) {
+        self.discarded += 1;
+        debug!("{ant:?}: no decision this round — {reason}");
     }
 }
 
 impl DecisionSource for JevSource {
     fn request(&mut self, ant: &AntView<'_>) {
         if self.in_flight.len() >= MAX_IN_FLIGHT {
-            // Skipping beats queueing: by the time a queued request went out,
-            // the ant would have moved on and the answer would be stale.
+            // Queueing is no good — by the time a queued request went out, the
+            // ant would have moved on. So the question is dropped, and the ant
+            // waits for its next turn. Silently dropping it once made ants
+            // stand for ever; now it is counted and shown.
+            self.discard(ant.id, "too many questions already in the air");
             return;
         }
 
@@ -78,7 +78,6 @@ impl DecisionSource for JevSource {
         self.in_flight.push(InFlight {
             ant: ant.id,
             offered: ant.options.clone(),
-            carrying: ant.carrying,
             pending,
             deadline: Instant::now() + REQUEST_TIMEOUT * 2,
         });
@@ -88,10 +87,14 @@ impl DecisionSource for JevSource {
         "Jev"
     }
 
+    fn discarded(&self) -> u32 {
+        self.discarded
+    }
+
     fn poll(&mut self) -> Vec<AntMove> {
         let now = Instant::now();
         let mut moves = Vec::new();
-        let mut failed: Vec<(AntId, Vec<Action>, bool)> = Vec::new();
+        let mut failed: Vec<(AntId, String)> = Vec::new();
 
         self.in_flight
             .retain_mut(|flight| match flight.pending.poll() {
@@ -107,21 +110,19 @@ impl DecisionSource for JevSource {
                             },
                         }),
                         Err(reason) => {
-                            debug!("{:?} falls back to the classic rules: {reason}", flight.ant);
-                            failed.push((flight.ant, flight.offered.clone(), flight.carrying));
+                            failed.push((flight.ant, reason));
                         }
                     }
                     false
                 }
                 Some(Err(error)) => {
                     warn!("{:?}: {error}", flight.ant);
-                    failed.push((flight.ant, flight.offered.clone(), flight.carrying));
+                    failed.push((flight.ant, error.to_string()));
                     false
                 }
                 None => {
                     if now >= flight.deadline {
-                        warn!("{:?}: no answer before the deadline", flight.ant);
-                        failed.push((flight.ant, flight.offered.clone(), flight.carrying));
+                        failed.push((flight.ant, "no answer before the deadline".to_string()));
                         false
                     } else {
                         true
@@ -129,10 +130,9 @@ impl DecisionSource for JevSource {
                 }
             });
 
-        for (ant, offered, carrying) in failed {
-            self.fall_back(ant, offered, carrying);
+        for (ant, reason) in failed {
+            self.discard(ant, &reason);
         }
-        moves.extend(self.classic.poll());
         moves
     }
 }
