@@ -1,37 +1,17 @@
 //! Everything that is meant to be tuned lives here, never inline in a system.
 
-/// Board width in cells. Odd on purpose, so the nest sits exactly in the middle.
-pub const GRID_WIDTH: i32 = 25;
-/// Board height in cells. Odd for the same reason.
-pub const GRID_HEIGHT: i32 = 17;
-
-/// Edge length of the nest, a square in the centre of the board.
-pub const NEST_SIZE: i32 = 3;
-
-/// How many fruits the board is kept topped up to.
-pub const FRUIT_TARGET: usize = 14;
-/// Seconds between two fruits growing back.
-pub const FRUIT_REGROWTH: f32 = 4.0;
+/// Board width in cells.
+pub const GRID_WIDTH: i32 = 24;
+/// Board height in cells.
+pub const GRID_HEIGHT: i32 = 16;
 /// Edge length of one cell in pixels.
 pub const CELL_SIZE: f32 = 32.0;
 
 /// How many ants the colony starts with.
 pub const ANT_COUNT: usize = 12;
 
-/// Upper bound between two decisions for one ant. Not the normal case: an ant
-/// that finishes an intent asks again at once, and so does every ant when the
-/// queen speaks. `ANTS.md` §9 — event-driven questions matter more than a short
-/// fixed interval.
-///
-/// Measured on 2026-09-21 with twelve ants (`internals/konzept-2.md` §7):
-/// 1 s cost $0.97/h, 2 s $0.51/h, 6 s $0.16/h — and the delivery rate fell with
-/// it, almost exactly in step. Two seconds is the compromise: half the cost of
-/// the old pacing, and ants that still look busy.
-pub const THINK_INTERVAL: f32 = 2.0;
-
-/// How far an ant walks on one "head that way" decision. Exploring is an intent
-/// too, otherwise searching costs a request per cell.
-pub const WANDER_CELLS: i32 = 12;
+/// Seconds between two decision rounds.
+pub const THINK_INTERVAL: f32 = 1.0;
 /// Seconds an ant takes to walk from one cell to the next.
 pub const STEP_DURATION: f32 = 0.25;
 

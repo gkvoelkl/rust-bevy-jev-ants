@@ -15,7 +15,6 @@ use crate::ants::components::AntId;
 use crate::api::types::{Answer, ApiError, Question, SystemOneRequest, USD_PER_INPUT_TOKEN};
 use crate::api::{Client, ENDPOINT_PATH, Reply};
 use crate::config::{ANT_COUNT, THINK_INTERVAL};
-use crate::decisions::Action;
 use crate::decisions::AntView;
 use crate::decisions::jev::build_request;
 use crate::world::grid::Dir;
@@ -75,17 +74,12 @@ fn example_request() -> SystemOneRequest {
     let view = AntView {
         id: AntId(0),
         order: "Geht alle nach Osten",
-        options: [Dir::North, Dir::East, Dir::SouthEast, Dir::West]
-            .into_iter()
-            .map(Action::Walk)
-            .chain([Action::Wait])
-            .collect(),
+        options: vec![Dir::North, Dir::East, Dir::SouthEast, Dir::West, Dir::Stay],
         sightings: vec![
             "another ant, 2 cells to the north".to_string(),
             "another ant, 3 cells to the south-east".to_string(),
             "the edge of the world, 1 cell to the north-west".to_string(),
         ],
-        carrying: false,
     };
 
     let mut request = build_request(&view);

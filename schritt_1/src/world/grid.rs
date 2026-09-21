@@ -63,7 +63,8 @@ impl Dir {
         }
     }
 
-    /// The key this direction gets in a `choice` question, via `Action::key`.
+    /// The key this direction gets in a `choice` question. The answer is mapped
+    /// back through `from_key`, so both live next to each other on purpose.
     pub fn key(self) -> &'static str {
         match self {
             Dir::North => "north",
@@ -78,6 +79,10 @@ impl Dir {
         }
     }
 
+    pub fn from_key(key: &str) -> Option<Dir> {
+        Dir::ALL.into_iter().find(|dir| dir.key() == key)
+    }
+
     /// How the direction is spelled in a sentence the model reads.
     pub fn spoken(self) -> &'static str {
         match self {
@@ -90,6 +95,15 @@ impl Dir {
             Dir::West => "west",
             Dir::NorthWest => "north-west",
             Dir::Stay => "stay",
+        }
+    }
+
+    /// The option description in a `choice` question. These texts move into
+    /// `assets/questions.ron` later — rewording them is the real work.
+    pub fn description(self) -> String {
+        match self {
+            Dir::Stay => "Do not move this turn".to_string(),
+            other => format!("Step one cell {}", other.spoken()),
         }
     }
 
@@ -161,33 +175,11 @@ impl Grid {
     }
 }
 
-/// A cell on the board. Ants carry it, and so does anything else that stands
-/// on the grid.
-#[derive(Component, Clone, Copy)]
-pub struct GridPos(pub IVec2);
-
-/// What stands on a cell. Both block movement — an ant walks around a fruit
-/// just as it walks around another ant — but the ant is told them apart, so
-/// "a fruit" never shows up in its view as "another ant".
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Occupant {
-    Ant(Entity),
-    Fruit(Entity),
-}
-
-impl Occupant {
-    pub fn entity(self) -> Entity {
-        match self {
-            Occupant::Ant(entity) | Occupant::Fruit(entity) => entity,
-        }
-    }
-}
-
-/// What stands on which cell. This is the single source of truth about
-/// positions: nothing may ever enter a cell that is taken here.
+/// Who stands on which cell. This is the single source of truth about positions:
+/// no ant may ever enter a cell that is taken here.
 #[derive(Resource)]
 pub struct Occupancy {
-    cells: Vec<Option<Occupant>>,
+    cells: Vec<Option<Entity>>,
 }
 
 impl Occupancy {
@@ -201,24 +193,21 @@ impl Occupancy {
         grid.contains(cell) && self.cells[grid.index(cell)].is_none()
     }
 
-    /// What is on this cell. Out of bounds reads as empty; the edge of the
-    /// world is reported to the ant separately, because it is a different thing.
-    pub fn at(&self, grid: Grid, cell: IVec2) -> Option<Occupant> {
-        if !grid.contains(cell) {
-            return None;
-        }
-        self.cells[grid.index(cell)]
+    /// Somebody stands here. Out of bounds is not "taken", it is the edge —
+    /// the two are reported differently to the ant.
+    pub fn is_taken(&self, grid: Grid, cell: IVec2) -> bool {
+        grid.contains(cell) && self.cells[grid.index(cell)].is_some()
     }
 
-    pub fn occupy(&mut self, grid: Grid, cell: IVec2, occupant: Occupant) {
-        self.cells[grid.index(cell)] = Some(occupant);
+    pub fn occupy(&mut self, grid: Grid, cell: IVec2, ant: Entity) {
+        self.cells[grid.index(cell)] = Some(ant);
     }
 
-    /// Frees a cell, but only if `who` is really what stands there. A stale
+    /// Frees a cell, but only if `ant` is really the one standing there. A stale
     /// call can then never evict somebody else.
-    pub fn vacate(&mut self, grid: Grid, cell: IVec2, who: Entity) {
+    pub fn vacate(&mut self, grid: Grid, cell: IVec2, ant: Entity) {
         let slot = &mut self.cells[grid.index(cell)];
-        if slot.map(Occupant::entity) == Some(who) {
+        if *slot == Some(ant) {
             *slot = None;
         }
     }

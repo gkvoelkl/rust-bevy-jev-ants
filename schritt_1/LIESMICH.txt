@@ -1,0 +1,2 @@
+Kopie des Quellstands nach Schritt 1, erstellt am 21.09.2026 aus Commit 98056d6.
+Nur zum Nachschlagen — gebaut wird aus ../src.

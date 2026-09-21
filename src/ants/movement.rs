@@ -1,35 +1,72 @@
-//! Turning a decision into a step, and the step into motion.
-
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-use crate::config::STEP_DURATION;
-use crate::decisions::{ActiveSource, DecisionStats, Origin};
-use crate::world::grid::{Dir, Grid, Occupancy};
+use crate::config::{STEP_DURATION, WANDER_CELLS};
+use crate::decisions::{Action, ActiveSource, DecisionStats, Origin};
+use crate::world::grid::{Dir, Grid, GridPos, Occupancy, Occupant};
 
-use super::components::{AntId, Facing, GridPos, LastDecision, MoveAnim};
+use super::components::{AntId, Facing, LastDecision, MoveAnim};
+use super::intent::Intent;
 
-/// Picks up whatever the decision source has ready and starts the steps.
+/// Where a carried fruit sits: on the ant's back, just behind its middle. The
+/// fruit is a child of the ant, so it turns with it.
+pub(super) const ON_THE_BACK: Vec3 = Vec3::new(0.0, -4.0, 0.2);
+
+/// Begins a step into `direction`, if that cell is still free.
 ///
-/// Every move is validated **again** here: between asking and answering a cell
-/// may have been taken. Moves are applied in ascending ant id, so two ants that
-/// want the same cell always resolve the same way — the lower id wins.
+/// The target is reserved now and the old cell released only when the step
+/// ends. That rules out both overlapping and two ants swapping through each
+/// other.
+pub(super) fn start_step(
+    commands: &mut Commands,
+    occupancy: &mut Occupancy,
+    grid: Grid,
+    ant: Entity,
+    from: IVec2,
+    direction: Dir,
+    facing: &mut Facing,
+) -> bool {
+    let target = from + direction.offset();
+    if !occupancy.is_free(grid, target) {
+        return false;
+    }
+
+    occupancy.occupy(grid, target, Occupant::Ant(ant));
+    facing.0 = direction;
+    commands.entity(ant).insert(MoveAnim {
+        from,
+        to: target,
+        t: 0.0,
+    });
+    true
+}
+
+/// The ants that are ready for a new decision — the ones not mid-step.
+type ReadyAnts<'w, 's> =
+    Query<'w, 's, (Entity, &'static AntId, &'static mut LastDecision), Without<MoveAnim>>;
+
+/// Takes whatever the decision source has ready and hands it to the simulation.
+///
+/// Nothing is carried out here any more: every action is an intent, and
+/// `intent::pursue_intents` works on it over the following ticks. What does
+/// happen here is the bookkeeping — the decision is recorded for the debug
+/// layer and counted in the statistics, whether or not the ant still exists to
+/// act on it.
 pub fn apply_decisions(
     mut commands: Commands,
-    grid: Res<Grid>,
-    mut occupancy: ResMut<Occupancy>,
     mut source: ResMut<ActiveSource>,
     mut stats: ResMut<DecisionStats>,
-    mut ants: Query<(Entity, &AntId, &GridPos, &mut Facing, &mut LastDecision), Without<MoveAnim>>,
+    mut ants: ReadyAnts,
 ) {
     let mut moves = source.0.poll();
     if moves.is_empty() {
         return;
     }
+    // Ascending ant id, so two ants that want the same thing always resolve the
+    // same way.
     moves.sort_by_key(|ant_move| ant_move.id);
 
-    let grid = *grid;
-    let by_id: HashMap<AntId, Entity> = ants.iter().map(|(entity, id, ..)| (*id, entity)).collect();
+    let by_id: HashMap<AntId, Entity> = ants.iter().map(|(entity, id, _)| (*id, entity)).collect();
 
     for ant_move in moves {
         // Counted before anything else: an answer that arrives too late still
@@ -39,34 +76,33 @@ pub fn apply_decisions(
         let Some(&entity) = by_id.get(&ant_move.id) else {
             continue;
         };
-        let Ok((_, _, position, mut facing, mut last)) = ants.get_mut(entity) else {
+        let Ok((_, _, mut last)) = ants.get_mut(entity) else {
             continue;
         };
 
-        last.dir = Some(ant_move.dir);
+        last.action = Some(ant_move.action);
         last.confidence = match ant_move.origin {
             Origin::Jev { confidence, .. } => Some(confidence),
             Origin::Classic => None,
         };
 
-        if ant_move.dir == Dir::Stay {
-            continue;
+        match ant_move.action {
+            Action::Wait => {
+                commands.entity(entity).remove::<Intent>();
+            }
+            Action::Walk(direction) => {
+                commands.entity(entity).insert(Intent::Walk {
+                    dir: direction,
+                    left: WANDER_CELLS,
+                });
+            }
+            Action::Fetch { fruit, .. } => {
+                commands.entity(entity).insert(Intent::Fetch(fruit));
+            }
+            Action::CarryHome => {
+                commands.entity(entity).insert(Intent::CarryHome);
+            }
         }
-
-        let target = position.0 + ant_move.dir.offset();
-        if !occupancy.is_free(grid, target) {
-            continue; // the cell went away while we were waiting — stay put
-        }
-
-        // Reserve the target now, release the old cell only when the step ends.
-        // That rules out both overlapping and two ants swapping through each other.
-        occupancy.occupy(grid, target, entity);
-        facing.0 = ant_move.dir;
-        commands.entity(entity).insert(MoveAnim {
-            from: position.0,
-            to: target,
-            t: 0.0,
-        });
     }
 }
 

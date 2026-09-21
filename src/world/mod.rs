@@ -1,10 +1,14 @@
+pub mod fruit;
 pub mod grid;
+pub mod nest;
 pub mod render;
 pub mod vision;
 
 use bevy::prelude::*;
 
+use fruit::Regrowth;
 use grid::{Grid, Occupancy};
+use nest::{Nest, Stores};
 
 pub struct WorldPlugin;
 
@@ -14,6 +18,17 @@ impl Plugin for WorldPlugin {
         app.insert_resource(grid)
             .insert_resource(Occupancy::new(grid))
             .insert_resource(render::clear_color())
-            .add_systems(Startup, (render::spawn_camera, render::spawn_board));
+            .init_resource::<Nest>()
+            .init_resource::<Stores>()
+            .init_resource::<Regrowth>()
+            .add_systems(
+                Startup,
+                (
+                    render::spawn_camera,
+                    render::spawn_board,
+                    fruit::plant_first_fruits,
+                ),
+            )
+            .add_systems(Update, fruit::regrow);
     }
 }

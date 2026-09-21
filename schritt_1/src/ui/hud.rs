@@ -32,30 +32,11 @@ fn confidence_rgb(confidence: f32) -> (u8, u8, u8) {
 /// than a made-up number.
 const CLASSIC_RGB: (u8, u8, u8) = (140, 150, 170);
 
-pub fn top_bar(
-    ui: &mut egui::Ui,
-    stats: &DecisionStats,
-    source: &str,
-    debug_on: bool,
-    stored: u32,
-    on_the_board: usize,
-) {
+pub fn top_bar(ui: &mut egui::Ui, stats: &DecisionStats, source: &str, debug_on: bool) {
     egui::Panel::top("hud").show(ui, |ui| {
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            // The colony first: that is the game. The model's numbers after it.
-            ui.label(egui::RichText::new(format!("{stored} stored")).strong());
-            ui.label(format!("· {on_the_board} fruits on the board"));
-            if stored > 0 {
-                // The number 2c is about: fetching a fruit four cells away used
-                // to cost four decisions, now it costs one plus the way home.
-                ui.label(format!(
-                    "· {:.1} requests per fruit",
-                    f64::from(stats.from_jev) / f64::from(stored)
-                ));
-            }
-            ui.separator();
-            ui.label(format!("Deciding: {source}"));
+            ui.label(egui::RichText::new(format!("Deciding: {source}")).strong());
             ui.separator();
             ui.label(format!(
                 "{} steps from Jev, {} classic",
@@ -96,16 +77,16 @@ pub fn intent_overlay(
 ) {
     let painter = ui.painter();
     for (transform, last) in ants {
-        let Some(action) = last.action else {
+        let Some(direction) = last.dir else {
             continue; // has not decided anything yet
         };
 
         let (text, rgb) = match last.confidence {
             Some(confidence) => (
-                format!("{} {confidence:.2}", action.label()),
+                format!("{} {confidence:.2}", direction.spoken()),
                 confidence_rgb(confidence),
             ),
-            None => (format!("{} classic", action.label()), CLASSIC_RGB),
+            None => (format!("{} classic", direction.spoken()), CLASSIC_RGB),
         };
 
         painter.text(

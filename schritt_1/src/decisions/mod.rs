@@ -10,87 +10,18 @@
 //! the frame loop never waits. In step 1 there are two sources; replay and the
 //! classic rules dock onto the same trait later.
 
-pub mod classic;
 pub mod jev;
-pub mod options;
+pub mod random;
 
 use std::time::Duration;
 
 use bevy::prelude::*;
 
-use crate::ants::components::{AntId, Carrying, MoveAnim};
-use crate::ants::intent::Intent;
+use crate::ants::components::{AntId, GridPos, MoveAnim};
 use crate::api::Client;
 use crate::config::{THINK_INTERVAL, VISION_RADIUS};
-use crate::world::grid::{Dir, Grid, GridPos, Occupancy};
-use crate::world::nest::Nest;
+use crate::world::grid::{Dir, Grid, Occupancy, free_directions};
 use crate::world::vision::sightings;
-
-/// What an ant can decide to do. Two of these are **intents**, not steps: the
-/// simulation carries them out over several ticks and several cells, and the
-/// model is asked again only when one finishes or falls apart.
-///
-/// That is `ANTS.md` rule 3, and it is what makes the game affordable. Fetching
-/// a fruit three cells away used to cost three decisions; now it costs one.
-/// Picking up and putting down are no longer choices — they are what happens
-/// when an intent reaches its end.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Action {
-    /// Head that way for a few cells. Exploring is an intent as well — a single
-    /// step per decision is what made searching expensive.
-    Walk(Dir),
-    /// Stand still this round.
-    Wait,
-    /// Walk to this fruit and pick it up. Only ever offered for a fruit the ant
-    /// can actually see.
-    Fetch {
-        fruit: Entity,
-        /// Where it lies, for the option text and for the classic rules.
-        dir: Dir,
-        distance: i32,
-    },
-    /// Carry what you hold back to the nest and put it down. Only offered to an
-    /// ant that is carrying something.
-    CarryHome,
-}
-
-impl Action {
-    /// The key this action gets in a `choice` question, and what the answer is
-    /// read back through. At most one fruit per direction is ever offered, so
-    /// these stay unique.
-    pub fn key(self) -> String {
-        match self {
-            Action::Walk(direction) => direction.key().to_string(),
-            Action::Wait => "stay".to_string(),
-            Action::Fetch { dir, .. } => format!("fetch_{}", dir.key()),
-            Action::CarryHome => "carry_home".to_string(),
-        }
-    }
-
-    /// The option description. These texts move into `assets/questions.ron`
-    /// later — rewording them is the real work.
-    pub fn description(self) -> String {
-        match self {
-            Action::Wait => "Stay where you are for now".to_string(),
-            Action::Walk(direction) => format!("Head {} for a few cells", direction.spoken()),
-            Action::Fetch { dir, distance, .. } => {
-                let cells = if distance == 1 { "cell" } else { "cells" };
-                format!("Fetch the fruit {distance} {cells} to the {}", dir.spoken())
-            }
-            Action::CarryHome => "Carry the fruit back to the nest".to_string(),
-        }
-    }
-
-    /// Short form for the debug layer above the ant.
-    pub fn label(self) -> String {
-        match self {
-            Action::Walk(direction) => direction.spoken().to_string(),
-            Action::Wait => "wait".to_string(),
-            Action::Fetch { dir, .. } => format!("fetch {}", dir.spoken()),
-            Action::CarryHome => "home".to_string(),
-        }
-    }
-}
 
 /// What one ant knows and may do right now. This is the whole world as far as
 /// the decision is concerned — no board size, no coordinates, no other ants
@@ -100,10 +31,9 @@ pub struct AntView<'a> {
     /// The queen's order, passed through word for word. Empty means none.
     pub order: &'a str,
     /// Generated at runtime from what this ant can reach — never a hardcoded list.
-    pub options: Vec<Action>,
+    pub options: Vec<Dir>,
     /// Sentences describing what is within sight.
     pub sightings: Vec<String>,
-    pub carrying: bool,
 }
 
 /// One ant's decision, together with where it came from. The origin is what
@@ -111,7 +41,7 @@ pub struct AntView<'a> {
 /// confidence, and it must not be counted as if the model had decided it.
 pub struct AntMove {
     pub id: AntId,
-    pub action: Action,
+    pub dir: Dir,
     pub origin: Origin,
 }
 
@@ -198,15 +128,6 @@ pub struct QueenOrder(pub String);
 pub struct ThinkTimer(Timer);
 
 impl ThinkTimer {
-    /// Makes the ant ask on the next tick instead of waiting out the interval.
-    /// Used when an intent finishes or falls apart, and when the queen speaks —
-    /// event-driven questions matter more than a short fixed interval
-    /// (`ANTS.md` §9).
-    pub fn ask_now(&mut self) {
-        let interval = self.0.duration();
-        self.0.set_elapsed(interval);
-    }
-
     pub fn staggered(index: usize, count: usize) -> Self {
         let mut timer = Timer::from_seconds(THINK_INTERVAL, TimerMode::Repeating);
         let offset = THINK_INTERVAL * index as f32 / count.max(1) as f32;
@@ -219,13 +140,13 @@ impl ThinkTimer {
 #[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ThinkSet;
 
-/// Which source the game runs on. `Classic` never touches the network, which is
+/// Which source the game runs on. `Random` never touches the network, which is
 /// also what keeps the tests offline.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SourceKind {
     #[default]
-    Classic,
-    /// Falls back to the classic rules when there is no key.
+    Random,
+    /// Falls back to `Random` when there is no key.
     Jev,
 }
 
@@ -244,10 +165,10 @@ impl Plugin for DecisionsPlugin {
                 }
                 None => {
                     warn!("no TYPESAFE_API_KEY — the colony runs on the classic rules");
-                    Box::new(classic::ClassicSource::default())
+                    Box::new(random::RandomSource::default())
                 }
             },
-            SourceKind::Classic => Box::new(classic::ClassicSource::default()),
+            SourceKind::Random => Box::new(random::RandomSource::default()),
         };
 
         app.insert_resource(ActiveSource(source))
@@ -257,72 +178,27 @@ impl Plugin for DecisionsPlugin {
     }
 }
 
-/// Every ant, with the two things that say whether it is available: a step in
-/// progress, and an intent it is already pursuing.
-type AntsToAsk<'w, 's> = Query<
-    'w,
-    's,
-    (
-        &'static AntId,
-        &'static GridPos,
-        &'static Carrying,
-        &'static mut ThinkTimer,
-        Option<&'static MoveAnim>,
-        Option<&'static Intent>,
-    ),
->;
-
 fn request_decisions(
     time: Res<Time>,
-    board: BoardRead,
+    grid: Res<Grid>,
+    occupancy: Res<Occupancy>,
     order: Res<QueenOrder>,
     mut source: ResMut<ActiveSource>,
-    mut ants: AntsToAsk,
+    mut ants: Query<(&AntId, &GridPos, &mut ThinkTimer, Option<&MoveAnim>)>,
 ) {
-    let grid = *board.grid;
-    let nest = *board.nest;
-    // A new order reaches every ant at once; that is the one thing worth
-    // interrupting a running intent for.
-    let new_order = order.is_changed();
-
-    for (id, position, carrying, mut timer, walking, intent) in &mut ants {
-        let due = timer.0.tick(time.delta()).just_finished();
-        if new_order {
-            timer.ask_now();
-        } else if !due {
+    let grid = *grid;
+    for (id, position, mut timer, walking) in &mut ants {
+        if !timer.0.tick(time.delta()).just_finished() {
             continue;
         }
-
         if walking.is_some() {
-            continue; // mid-step; it will be asked again next round
+            continue; // still on its way; it will be asked again next round
         }
-        if intent.is_some() && !new_order {
-            // Busy pursuing something. Asking now would throw away the answer
-            // we already paid for.
-            continue;
-        }
-
         source.0.request(&AntView {
             id: *id,
             order: &order.0,
-            options: options::available(
-                grid,
-                &board.occupancy,
-                nest,
-                position.0,
-                carrying.0.is_some(),
-                VISION_RADIUS,
-            ),
-            sightings: sightings(grid, &board.occupancy, nest, position.0, VISION_RADIUS),
-            carrying: carrying.0.is_some(),
+            options: free_directions(grid, &occupancy, position.0),
+            sightings: sightings(grid, &occupancy, position.0, VISION_RADIUS),
         });
     }
-}
-
-/// The board, read-only. Grouped so the system keeps a readable signature.
-#[derive(bevy::ecs::system::SystemParam)]
-struct BoardRead<'w> {
-    grid: Res<'w, Grid>,
-    nest: Res<'w, Nest>,
-    occupancy: Res<'w, Occupancy>,
 }

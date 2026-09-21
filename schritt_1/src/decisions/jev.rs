@@ -14,9 +14,10 @@ use crate::ants::components::AntId;
 use crate::api::types::{Answer, MODEL, Question, SystemOneRequest, SystemOneResponse};
 use crate::api::{Client, Pending, REQUEST_TIMEOUT};
 use crate::config::{MAX_IN_FLIGHT, MIN_CONFIDENCE, VISION_RADIUS};
+use crate::world::grid::Dir;
 
-use super::classic::ClassicSource;
-use super::{Action, AntMove, AntView, DecisionSource, Origin};
+use super::random::RandomSource;
+use super::{AntMove, AntView, DecisionSource, Origin};
 
 /// The question key. One question in step 1; `urgency` and `follows_order`
 /// join it against the same state in step 2.
@@ -31,9 +32,8 @@ const STEP_INSTRUCTIONS: &str = "Which single step should this ant take now? \
 struct InFlight {
     ant: AntId,
     /// Exactly the options this ant was offered. An answer is checked against
-    /// this list, so an action that was never offered can never be carried out.
-    offered: Vec<Action>,
-    carrying: bool,
+    /// this list, so a direction that was never offered can never become a move.
+    offered: Vec<Dir>,
     pending: Pending,
     /// Insurance against a callback that never fires; `ehttp` already times out.
     deadline: Instant,
@@ -43,7 +43,7 @@ pub struct JevSource {
     client: Client,
     in_flight: Vec<InFlight>,
     /// What a single ant falls back to when the model cannot answer for it.
-    classic: ClassicSource,
+    classic: RandomSource,
 }
 
 impl JevSource {
@@ -51,17 +51,16 @@ impl JevSource {
         Self {
             client,
             in_flight: Vec::new(),
-            classic: ClassicSource::default(),
+            classic: RandomSource::default(),
         }
     }
 
-    fn fall_back(&mut self, ant: AntId, offered: Vec<Action>, carrying: bool) {
+    fn fall_back(&mut self, ant: AntId, offered: Vec<Dir>) {
         self.classic.request(&AntView {
             id: ant,
             order: "",
             options: offered,
             sightings: Vec::new(),
-            carrying,
         });
     }
 }
@@ -78,7 +77,6 @@ impl DecisionSource for JevSource {
         self.in_flight.push(InFlight {
             ant: ant.id,
             offered: ant.options.clone(),
-            carrying: ant.carrying,
             pending,
             deadline: Instant::now() + REQUEST_TIMEOUT * 2,
         });
@@ -91,15 +89,15 @@ impl DecisionSource for JevSource {
     fn poll(&mut self) -> Vec<AntMove> {
         let now = Instant::now();
         let mut moves = Vec::new();
-        let mut failed: Vec<(AntId, Vec<Action>, bool)> = Vec::new();
+        let mut failed: Vec<(AntId, Vec<Dir>)> = Vec::new();
 
         self.in_flight
             .retain_mut(|flight| match flight.pending.poll() {
                 Some(Ok(reply)) => {
                     match read_step(&reply.response, &flight.offered) {
-                        Ok((action, confidence)) => moves.push(AntMove {
+                        Ok((direction, confidence)) => moves.push(AntMove {
                             id: flight.ant,
-                            action,
+                            dir: direction,
                             origin: Origin::Jev {
                                 confidence,
                                 latency_ms: reply.latency_ms,
@@ -108,20 +106,20 @@ impl DecisionSource for JevSource {
                         }),
                         Err(reason) => {
                             debug!("{:?} falls back to the classic rules: {reason}", flight.ant);
-                            failed.push((flight.ant, flight.offered.clone(), flight.carrying));
+                            failed.push((flight.ant, flight.offered.clone()));
                         }
                     }
                     false
                 }
                 Some(Err(error)) => {
                     warn!("{:?}: {error}", flight.ant);
-                    failed.push((flight.ant, flight.offered.clone(), flight.carrying));
+                    failed.push((flight.ant, flight.offered.clone()));
                     false
                 }
                 None => {
                     if now >= flight.deadline {
                         warn!("{:?}: no answer before the deadline", flight.ant);
-                        failed.push((flight.ant, flight.offered.clone(), flight.carrying));
+                        failed.push((flight.ant, flight.offered.clone()));
                         false
                     } else {
                         true
@@ -129,8 +127,8 @@ impl DecisionSource for JevSource {
                 }
             });
 
-        for (ant, offered, carrying) in failed {
-            self.fall_back(ant, offered, carrying);
+        for (ant, offered) in failed {
+            self.fall_back(ant, offered);
         }
         moves.extend(self.classic.poll());
         moves
@@ -143,7 +141,7 @@ pub fn build_request(ant: &AntView<'_>) -> SystemOneRequest {
     let criteria: BTreeMap<String, String> = ant
         .options
         .iter()
-        .map(|option| (option.key(), option.description()))
+        .map(|option| (option.key().to_string(), option.description()))
         .collect();
 
     let mut questions = BTreeMap::new();
@@ -162,10 +160,6 @@ pub fn build_request(ant: &AntView<'_>) -> SystemOneRequest {
             "order_from_the_ant_queen".to_string(),
             json!(ant.order.trim()),
         );
-    }
-    // Left out when the ant is empty-handed, like the empty order.
-    if ant.carrying {
-        state.insert("carrying".to_string(), json!("a fruit"));
     }
     state.insert(
         "vision".to_string(),
@@ -191,7 +185,7 @@ pub fn build_request(ant: &AntView<'_>) -> SystemOneRequest {
 
 /// The answer, checked twice: the option must have been offered, and the model
 /// must be sure enough. Otherwise the ant uses the classic rules.
-fn read_step(response: &SystemOneResponse, offered: &[Action]) -> Result<(Action, f32), String> {
+fn read_step(response: &SystemOneResponse, offered: &[Dir]) -> Result<(Dir, f32), String> {
     let Some(Answer::Choice {
         choice, confidence, ..
     }) = response.answers.get(STEP_QUESTION)
@@ -208,39 +202,31 @@ fn read_step(response: &SystemOneResponse, offered: &[Action]) -> Result<(Action
         ));
     }
 
-    // Looking the key up in the list the ant was offered is both the parse and
-    // the guard: anything the model made up is simply not in there.
-    let action = offered
-        .iter()
-        .copied()
-        .find(|option| option.key() == *choice)
-        .ok_or_else(|| format!("'{choice}' was never offered to this ant"))?;
+    let direction = Dir::from_key(choice).ok_or_else(|| format!("unknown option '{choice}'"))?;
 
-    Ok((action, *confidence))
+    if !offered.contains(&direction) {
+        return Err(format!("'{choice}' was never offered to this ant"));
+    }
+
+    Ok((direction, *confidence))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::grid::Dir;
 
-    fn view<'a>(order: &'a str, options: Vec<Action>, sightings: Vec<String>) -> AntView<'a> {
+    fn view<'a>(order: &'a str, options: Vec<Dir>, sightings: Vec<String>) -> AntView<'a> {
         AntView {
             id: AntId(7),
             order,
             options,
             sightings,
-            carrying: false,
         }
     }
 
     #[test]
     fn the_request_offers_only_what_the_ant_can_reach() {
-        let request = build_request(&view(
-            "",
-            vec![Action::Walk(Dir::East), Action::Wait],
-            Vec::new(),
-        ));
+        let request = build_request(&view("", vec![Dir::East, Dir::Stay], Vec::new()));
         let sent = serde_json::to_value(&request).expect("serialises");
 
         let criteria = &sent["questions"][STEP_QUESTION]["criteria"];
@@ -253,7 +239,7 @@ mod tests {
     fn the_state_never_carries_coordinates_or_an_empty_order() {
         let request = build_request(&view(
             "   ",
-            vec![Action::Walk(Dir::East)],
+            vec![Dir::East],
             vec!["another ant, 1 cell to the north".to_string()],
         ));
         let sent = serde_json::to_value(&request).expect("serialises");
@@ -277,17 +263,15 @@ mod tests {
 
     #[test]
     fn a_confident_offered_answer_becomes_a_move() {
-        let offered = [Action::Walk(Dir::East), Action::Wait];
-        let result = read_step(&answer("east", 0.99), &offered);
-        assert_eq!(result, Ok((Action::Walk(Dir::East), 0.99)));
+        let result = read_step(&answer("east", 0.99), &[Dir::East, Dir::Stay]);
+        assert_eq!(result, Ok((Dir::East, 0.99)));
     }
 
     /// The heart of the demo: an option that was not on the list cannot win,
     /// however sure the model is.
     #[test]
     fn an_option_that_was_never_offered_is_refused() {
-        let offered = [Action::Walk(Dir::East), Action::Wait];
-        let result = read_step(&answer("north", 0.99), &offered);
+        let result = read_step(&answer("north", 0.99), &[Dir::East, Dir::Stay]);
         assert!(result.is_err());
     }
 
@@ -296,8 +280,7 @@ mod tests {
     /// over, which is what keeps the ants moving instead of freezing.
     #[test]
     fn an_answer_close_to_chance_is_refused() {
-        let offered = [Action::Walk(Dir::East), Action::Wait];
-        let result = read_step(&answer("east", 0.18), &offered);
+        let result = read_step(&answer("east", 0.18), &[Dir::East, Dir::Stay]);
         assert!(result.is_err());
     }
 
@@ -306,37 +289,13 @@ mod tests {
     /// "Verteilt euch". Those measured between 0.29 and 0.44.
     #[test]
     fn a_nuanced_but_real_preference_is_kept() {
-        let offered = [Action::Walk(Dir::East), Action::Wait];
-        let result = read_step(&answer("east", 0.33), &offered);
-        assert_eq!(result, Ok((Action::Walk(Dir::East), 0.33)));
-    }
-
-    /// An intent is offered by its own key and read back by it.
-    #[test]
-    fn fetching_is_read_back_from_its_key() {
-        let fetch = Action::Fetch {
-            fruit: Entity::from_raw_u32(3).unwrap(),
-            dir: Dir::NorthEast,
-            distance: 2,
-        };
-        let offered = [fetch, Action::Wait];
-
-        let result = read_step(&answer("fetch_north_east", 0.90), &offered);
-        assert_eq!(result, Ok((fetch, 0.90)));
-    }
-
-    /// Carrying home when the ant holds nothing was never offered, so it cannot
-    /// happen — whatever the model says.
-    #[test]
-    fn carrying_home_empty_handed_is_refused() {
-        let offered = [Action::Walk(Dir::East), Action::Wait];
-        let result = read_step(&answer("carry_home", 0.99), &offered);
-        assert!(result.is_err());
+        let result = read_step(&answer("east", 0.33), &[Dir::East, Dir::Stay]);
+        assert_eq!(result, Ok((Dir::East, 0.33)));
     }
 
     #[test]
     fn a_direction_that_does_not_exist_is_refused() {
-        let result = read_step(&answer("upwards", 0.99), &[Action::Walk(Dir::East)]);
+        let result = read_step(&answer("upwards", 0.99), &[Dir::East]);
         assert!(result.is_err());
     }
 }

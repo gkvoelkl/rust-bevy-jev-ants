@@ -9,7 +9,6 @@
 use crate::ants::components::AntId;
 use crate::api::Client;
 use crate::api::types::{Answer, Question, SystemOneRequest};
-use crate::decisions::Action;
 use crate::decisions::AntView;
 use crate::decisions::jev::{STEP_QUESTION, build_request};
 use crate::probe::ask_and_wait;
@@ -22,19 +21,13 @@ fn crowded_view(order: &str) -> AntView<'_> {
     AntView {
         id: AntId(0),
         order,
-        options: Dir::COMPASS
-            .iter()
-            .copied()
-            .map(Action::Walk)
-            .chain([Action::Wait])
-            .collect(),
+        options: Dir::ALL.to_vec(),
         sightings: vec![
             "another ant, 1 cell to the north".to_string(),
             "another ant, 2 cells to the north-east".to_string(),
             "another ant, 2 cells to the north-west".to_string(),
             "the edge of the world, 2 cells to the west".to_string(),
         ],
-        carrying: false,
     }
 }
 
@@ -42,14 +35,8 @@ fn blind_view(order: &str) -> AntView<'_> {
     AntView {
         id: AntId(0),
         order,
-        options: Dir::COMPASS
-            .iter()
-            .copied()
-            .map(Action::Walk)
-            .chain([Action::Wait])
-            .collect(),
+        options: Dir::ALL.to_vec(),
         sightings: Vec::new(),
-        carrying: false,
     }
 }
 
@@ -244,9 +231,8 @@ fn row(client: &Client, order: &str, options: &[Dir]) {
     let view = AntView {
         id: AntId(0),
         order,
-        options: options.iter().copied().map(Action::Walk).collect(),
+        options: options.to_vec(),
         sightings: crowded_view(order).sightings,
-        carrying: false,
     };
 
     let shown = if order.is_empty() {

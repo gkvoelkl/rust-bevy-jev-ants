@@ -7,8 +7,6 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::ants::components::LastDecision;
 use crate::decisions::{ActiveSource, DecisionStats, QueenOrder};
-use crate::world::fruit::Fruit;
-use crate::world::nest::Stores;
 
 use queen_input::{OrderDraft, OrderHistory};
 
@@ -51,13 +49,6 @@ struct OrderState<'w> {
     history: ResMut<'w, OrderHistory>,
 }
 
-/// What the colony has and what is left to fetch.
-#[derive(SystemParam)]
-struct ColonyState<'w, 's> {
-    stores: Res<'w, Stores>,
-    fruits: Query<'w, 's, &'static Fruit>,
-}
-
 /// One root `Ui` for the whole frame. egui 0.36 hangs panels off a `Ui`, and two
 /// independent roots would each lay out as if the other were not there.
 fn draw(
@@ -66,7 +57,6 @@ fn draw(
     stats: Res<DecisionStats>,
     layer: Res<DebugLayer>,
     source: Res<ActiveSource>,
-    colony: ColonyState,
     ants: Query<(&Transform, &LastDecision)>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?.clone();
@@ -78,14 +68,7 @@ fn draw(
             .max_rect(ctx.viewport_rect()),
     );
 
-    hud::top_bar(
-        &mut viewport,
-        &stats,
-        source.0.name(),
-        layer.0,
-        colony.stores.0,
-        colony.fruits.iter().count(),
-    );
+    hud::top_bar(&mut viewport, &stats, source.0.name(), layer.0);
     queen_input::bottom_bar(
         &mut viewport,
         &mut orders.draft,

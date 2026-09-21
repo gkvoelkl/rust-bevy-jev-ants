@@ -1,5 +1,4 @@
 pub mod components;
-pub mod intent;
 pub mod movement;
 
 use bevy::prelude::*;
@@ -7,10 +6,10 @@ use rand::seq::{IndexedRandom, SliceRandom};
 
 use crate::config::{ANT_COUNT, CELL_SIZE};
 use crate::decisions::{ThinkSet, ThinkTimer};
-use crate::world::grid::{Dir, Grid, GridPos, Occupancy, Occupant};
+use crate::world::grid::{Dir, Grid, Occupancy};
 use crate::world::render::Z_ANT;
 
-use components::{AntId, Carrying, Facing, LastDecision};
+use components::{AntId, Facing, GridPos, LastDecision};
 
 pub const BODY: Color = Color::srgb(0.85, 0.42, 0.18);
 const HEAD: Color = Color::srgb(0.96, 0.72, 0.36);
@@ -23,7 +22,6 @@ impl Plugin for AntsPlugin {
             Update,
             (
                 movement::apply_decisions,
-                intent::pursue_intents,
                 movement::animate_steps,
                 movement::face_direction,
             )
@@ -37,12 +35,8 @@ fn spawn_ants(mut commands: Commands, grid: Res<Grid>, mut occupancy: ResMut<Occ
     let grid = *grid;
     let mut rng = rand::rng();
 
-    // Only free cells, and each one only once: fruits may already be standing
-    // on the board, and no two ants may start on top of each other.
-    let mut cells: Vec<IVec2> = grid
-        .cells()
-        .filter(|cell| occupancy.is_free(grid, *cell))
-        .collect();
+    // Draw distinct cells, so no two ants ever start on top of each other.
+    let mut cells: Vec<IVec2> = grid.cells().collect();
     cells.shuffle(&mut rng);
 
     for (index, cell) in cells.into_iter().take(ANT_COUNT).enumerate() {
@@ -55,7 +49,6 @@ fn spawn_ants(mut commands: Commands, grid: Res<Grid>, mut occupancy: ResMut<Occ
                 ThinkTimer::staggered(index, ANT_COUNT),
                 Facing(facing),
                 LastDecision::default(),
-                Carrying::default(),
                 Sprite::from_color(BODY, Vec2::new(CELL_SIZE * 0.34, CELL_SIZE * 0.56)),
                 Transform::from_translation(grid.to_screen(cell).extend(Z_ANT))
                     .with_rotation(Quat::from_rotation_z(facing.angle())),
@@ -65,21 +58,17 @@ fn spawn_ants(mut commands: Commands, grid: Res<Grid>, mut occupancy: ResMut<Occ
                 )],
             ))
             .id();
-        occupancy.occupy(grid, cell, Occupant::Ant(ant));
+        occupancy.occupy(grid, cell, ant);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::FRUIT_TARGET;
     use crate::decisions::DecisionsPlugin;
     use crate::world::WorldPlugin;
-    use crate::world::fruit::Fruit;
-    use crate::world::grid::GridPos;
-    use crate::world::nest::{Nest, Stores};
     use bevy::platform::collections::HashSet;
-    use components::MoveAnim;
+    use components::{GridPos, MoveAnim};
     use std::time::Duration;
 
     /// Drives the whole simulation headless. `Time` is advanced by hand, so a
@@ -97,32 +86,12 @@ mod tests {
             app.world_mut().resource_mut::<Time>().advance_by(step);
             app.update();
 
-            // Fruits go into the set first, so an ant standing on one trips the
-            // same assertion as two ants sharing a cell.
-            let nest = *app.world().resource::<Nest>();
             let mut taken: HashSet<IVec2> = HashSet::new();
-
-            let mut fruits = app.world_mut().query_filtered::<&GridPos, With<Fruit>>();
-            for position in fruits.iter(app.world()) {
-                assert!(
-                    !nest.contains(position.0),
-                    "a fruit grew inside the nest at {:?}",
-                    position.0
-                );
-                assert!(
-                    taken.insert(position.0),
-                    "two fruits on cell {:?} in frame {frame}",
-                    position.0
-                );
-            }
-
-            let mut query = app
-                .world_mut()
-                .query_filtered::<(&GridPos, Option<&MoveAnim>), With<AntId>>();
+            let mut query = app.world_mut().query::<(&GridPos, Option<&MoveAnim>)>();
             for (position, moving) in query.iter(app.world()) {
                 assert!(
                     taken.insert(position.0),
-                    "cell {:?} is taken twice in frame {frame}",
+                    "two ants share cell {:?} in frame {frame}",
                     position.0
                 );
                 if let Some(anim) = moving {
@@ -142,46 +111,6 @@ mod tests {
         run_headless(3600, Duration::from_millis(50));
     }
 
-    /// The acceptance test for the intent layer: **without a model and without a
-    /// key**, the colony fetches fruit and carries it home. If this ever fails,
-    /// the game has stopped being playable on its own.
-    #[test]
-    fn the_colony_brings_fruit_home_without_a_model() {
-        let mut app = App::new();
-        app.insert_resource(Time::<()>::default());
-        app.add_plugins((WorldPlugin, DecisionsPlugin::default(), AntsPlugin));
-        app.finish();
-        app.cleanup();
-        app.update();
-
-        let mut fruits = app.world_mut().query::<&Fruit>();
-        assert_eq!(
-            fruits.iter(app.world()).count(),
-            FRUIT_TARGET,
-            "the board starts stocked"
-        );
-
-        // Half a simulated minute.
-        for _ in 0..600 {
-            app.world_mut()
-                .resource_mut::<Time>()
-                .advance_by(Duration::from_millis(50));
-            app.update();
-        }
-
-        let stored = app.world().resource::<Stores>().0;
-        assert!(
-            stored >= 5,
-            "the classic rules delivered only {stored} fruits in 30 seconds"
-        );
-
-        let mut fruits = app.world_mut().query::<&Fruit>();
-        assert!(
-            fruits.iter(app.world()).count() <= FRUIT_TARGET,
-            "regrowth tops up, it does not stack up"
-        );
-    }
-
     #[test]
     fn every_ant_stays_on_the_board() {
         let mut app = App::new();
@@ -198,7 +127,7 @@ mod tests {
         }
 
         let grid = *app.world().resource::<Grid>();
-        let mut query = app.world_mut().query_filtered::<&GridPos, With<AntId>>();
+        let mut query = app.world_mut().query::<&GridPos>();
         let positions: Vec<IVec2> = query.iter(app.world()).map(|p| p.0).collect();
         assert_eq!(positions.len(), ANT_COUNT);
         for position in positions {

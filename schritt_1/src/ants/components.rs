@@ -1,29 +1,26 @@
 use bevy::prelude::*;
 
-use crate::decisions::Action;
 use crate::world::grid::Dir;
-
-// `GridPos` lives in `world/grid.rs`: it is a position on the board, and fruits
-// stand on cells just as ants do.
 
 /// Stable identity of an ant. Decisions are keyed and ordered by it, which is
 /// what makes conflict resolution deterministic.
 #[derive(Component, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct AntId(pub u32);
 
+/// The cell the ant belongs to. While a step is running this still names the
+/// cell it started from; `MoveAnim` holds the target.
+#[derive(Component, Clone, Copy)]
+pub struct GridPos(pub IVec2);
+
 /// Where the ant is looking. Purely cosmetic.
 #[derive(Component, Clone, Copy)]
 pub struct Facing(pub Dir);
-
-/// The fruit this ant carries, riding on its back. `None` means empty-handed.
-#[derive(Component, Default)]
-pub struct Carrying(pub Option<Entity>);
 
 /// What this ant last decided and how sure the model was. Only read by the
 /// debug layer — the simulation itself does not care.
 #[derive(Component, Default)]
 pub struct LastDecision {
-    pub action: Option<Action>,
+    pub dir: Option<Dir>,
     /// `None` means the classic rules decided, which have no confidence.
     pub confidence: Option<f32>,
 }

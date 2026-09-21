@@ -5,17 +5,13 @@ use bevy::prelude::*;
 use crate::config::CELL_SIZE;
 
 use super::grid::Grid;
-use super::nest::Nest;
 
 pub const Z_BOARD: f32 = 0.0;
-pub const Z_FRUIT: f32 = 0.5;
 pub const Z_ANT: f32 = 1.0;
 
 const BACKGROUND: Color = Color::srgb(0.10, 0.09, 0.08);
 const CELL_LIGHT: Color = Color::srgb(0.22, 0.20, 0.16);
 const CELL_DARK: Color = Color::srgb(0.19, 0.17, 0.14);
-const NEST_LIGHT: Color = Color::srgb(0.34, 0.26, 0.17);
-const NEST_DARK: Color = Color::srgb(0.30, 0.23, 0.15);
 
 pub fn clear_color() -> ClearColor {
     ClearColor(BACKGROUND)
@@ -25,17 +21,14 @@ pub fn spawn_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
-/// A checkerboard, so the grid is readable without drawing lines. The nest is
-/// part of it rather than a separate object — it is ground, not a thing.
-pub fn spawn_board(mut commands: Commands, grid: Res<Grid>, nest: Res<Nest>) {
+/// A checkerboard, so the grid is readable without drawing lines.
+pub fn spawn_board(mut commands: Commands, grid: Res<Grid>) {
     let grid = *grid;
     for cell in grid.cells() {
-        let dark = (cell.x + cell.y) % 2 == 0;
-        let color = match (nest.contains(cell), dark) {
-            (true, true) => NEST_DARK,
-            (true, false) => NEST_LIGHT,
-            (false, true) => CELL_DARK,
-            (false, false) => CELL_LIGHT,
+        let color = if (cell.x + cell.y) % 2 == 0 {
+            CELL_DARK
+        } else {
+            CELL_LIGHT
         };
         commands.spawn((
             Sprite::from_color(color, Vec2::splat(CELL_SIZE)),
