@@ -18,6 +18,7 @@ use crate::config::{ANT_COUNT, THINK_INTERVAL};
 use crate::decisions::Action;
 use crate::decisions::AntView;
 use crate::decisions::jev::build_request;
+use crate::decisions::questions::DEFAULT_STEP;
 use crate::world::grid::Dir;
 
 const GIVE_UP_AFTER: Duration = Duration::from_secs(10);
@@ -75,6 +76,7 @@ fn example_request() -> SystemOneRequest {
     let view = AntView {
         id: AntId(0),
         order: "Geht alle nach Osten",
+        instructions: DEFAULT_STEP,
         options: [Dir::North, Dir::East, Dir::SouthEast, Dir::West]
             .into_iter()
             .map(Action::Walk)

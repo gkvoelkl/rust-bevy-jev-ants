@@ -1,0 +1,14 @@
+// The texts put to Jev. Code reads this file; it does not contain them.
+//
+// This is `ANTS.md` §4.5: the wording is the work, and it must be changeable
+// without a compiler. Edit the file and press "Reload from file" in the game,
+// or edit the text in the game directly and watch the next answers change.
+//
+// What belongs here are only the *texts*. The option list itself is never
+// written down anywhere — it is built from what the ant can see, every single
+// request, which is what keeps Jev from naming a fruit that is not there.
+Questions(
+    // The one question of step 1. It is asked as a `choice`, against the option
+    // list that ant was offered.
+    step: "Which single step should this ant take now? Follow the ant queen's order whenever it applies.",
+)

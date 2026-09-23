@@ -1,0 +1,28 @@
+// Level 1: the plain one. No river, no plank, nothing to work out — just a
+// colony, some fruit, and a queen who has to say something useful.
+//
+// It is here to teach the loop rather than to be hard: give an order, watch,
+// give a better one. An ant sees three cells, so "fruit is to the east" is
+// knowledge only the queen has.
+Scenario(
+    name: "Fruit for the stores",
+    briefing: "Eight ants, fruit scattered about, nothing in the way. Get five of them home.",
+
+    width: 24,
+    height: 16,
+
+    nest_at: (10, 6),
+    nest_size: 4,
+    ants: 8,
+
+    water: [],
+
+    fruit: [
+        (3, 2), (5, 12), (18, 3), (20, 11),
+        (2, 8), (21, 7), (12, 14), (14, 1),
+    ],
+
+    plank_at: None,
+
+    target: 5,
+)

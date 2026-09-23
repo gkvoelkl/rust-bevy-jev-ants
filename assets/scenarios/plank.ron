@@ -1,0 +1,43 @@
+// The first task: the fruit in the corner, and a river in the way.
+//
+// Coordinates follow the board — x grows east, y grows north — so the corner
+// full of fruit is the top left: small x, large y. The river seals it off
+// along x = 7 and y = 13, one cell wide the whole way. One cell is enough:
+// no ant wades.
+//
+// The plank lies far to the south-east, well away from both the nest and the
+// river. An ant that picks it up carries it to the bank and lays it down by
+// itself; only then is there a way over.
+//
+// What makes it a task rather than a chore: no ant can see any of this. Each
+// one sees three cells, and the plank and the river are half a board apart, so
+// nothing in the colony can connect them. The queen sees the whole picture and
+// has sentences. That gap is the level.
+Scenario(
+    name: "The plank and the river",
+    briefing: "Fruit is piled up in the north-west corner, behind a river no ant can wade. A plank lies far to the south-east, long enough to bridge it. No ant can see both at once. Get five fruits home.",
+
+    width: 30,
+    height: 20,
+
+    // Sixteen cells for eight ants. Any tighter and the colony spends the first
+    // seconds untangling itself instead of answering the queen.
+    nest_at: (13, 8),
+    nest_size: 4,
+    ants: 8,
+
+    // The river: down the east side of the corner, then along its south edge.
+    water: [
+        (7, 19), (7, 18), (7, 17), (7, 16), (7, 15), (7, 14), (7, 13),
+        (6, 13), (5, 13), (4, 13), (3, 13), (2, 13), (1, 13), (0, 13),
+    ],
+
+    fruit: [
+        (1, 15), (2, 18), (3, 14), (4, 17),
+        (5, 19), (2, 16), (6, 18), (4, 15),
+    ],
+
+    plank_at: Some((22, 4)),
+
+    target: 5,
+)

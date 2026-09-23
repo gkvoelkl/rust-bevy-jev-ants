@@ -7,7 +7,9 @@
 
 use bevy::prelude::*;
 
-use super::grid::{Dir, Grid, Occupancy, Occupant};
+use crate::config::PLANK_VISIBLE_FROM;
+
+use super::grid::{Dir, Grid, Occupancy, Occupant, Terrain};
 use super::nest::Nest;
 use super::scent::{self, Scent};
 
@@ -33,6 +35,8 @@ pub fn sightings(
             let what = match occupancy.at(grid, from + offset) {
                 Some(Occupant::Ant(_)) => "another ant",
                 Some(Occupant::Fruit(_)) => "a fruit",
+                // Reported on its own, from further off — see below.
+                Some(Occupant::Plank(_)) => continue,
                 None => continue,
             };
             let distance = dx.abs().max(dy.abs());
@@ -68,6 +72,45 @@ pub fn sightings(
         })
     };
 
+    // The plank, from further off than anything else — see `PLANK_VISIBLE_FROM`.
+    let plank = nearest(grid, from, PLANK_VISIBLE_FROM, |cell| {
+        matches!(occupancy.at(grid, cell), Some(Occupant::Plank(_)))
+    })
+    .map(|(distance, direction)| {
+        let cells = if distance == 1 { "cell" } else { "cells" };
+        format!(
+            "a plank lying on the ground, {distance} {cells} to the {} — long enough to \
+             bridge water",
+            direction.spoken()
+        )
+    });
+
+    // The water, and the way over it. Only the nearest of each: a river fills
+    // a good part of the sight square, and naming every cell of it would bury
+    // the rest of the state in repetition for no gain.
+    let water = nearest(grid, from, radius, |cell| {
+        occupancy.terrain_at(grid, cell) == Terrain::Water
+    })
+    .map(|(distance, direction)| {
+        let cells = if distance == 1 { "cell" } else { "cells" };
+        format!(
+            "water, {distance} {cells} to the {} — no ant can wade through it",
+            direction.spoken()
+        )
+    });
+
+    let crossing = nearest(grid, from, radius, |cell| {
+        occupancy.terrain_at(grid, cell) == Terrain::Bridge
+    })
+    .map(|(distance, direction)| {
+        let cells = if distance == 1 { "cell" } else { "cells" };
+        format!(
+            "a plank lying across the water, {distance} {cells} to the {} — it can be \
+             walked over",
+            direction.spoken()
+        )
+    });
+
     // Smelling is a close-range sense, not sight: only the cells next door.
     let trail = scent.uphill(grid, from).map(|(direction, strength)| {
         format!(
@@ -85,9 +128,41 @@ pub fn sightings(
 
     nest_sighting
         .into_iter()
+        .chain(plank)
+        .chain(crossing)
+        .chain(water)
         .chain(trail)
         .chain(around)
         .collect()
+}
+
+/// The closest cell within `radius` that `wanted` accepts, as distance and
+/// direction. Ties go to the first in compass order, so two ants in the same
+/// spot always read the same sentence.
+fn nearest(
+    grid: Grid,
+    from: IVec2,
+    radius: i32,
+    wanted: impl Fn(IVec2) -> bool,
+) -> Option<(i32, Dir)> {
+    let mut best: Option<(i32, Dir)> = None;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let offset = IVec2::new(dx, dy);
+            if offset == IVec2::ZERO || !grid.contains(from + offset) || !wanted(from + offset) {
+                continue;
+            }
+            let distance = dx.abs().max(dy.abs());
+            let direction = Dir::nearest(offset);
+            let better = best.is_none_or(|(known, known_dir)| {
+                distance < known || (distance == known && direction.key() < known_dir.key())
+            });
+            if better {
+                best = Some((distance, direction));
+            }
+        }
+    }
+    best
 }
 
 #[cfg(test)]

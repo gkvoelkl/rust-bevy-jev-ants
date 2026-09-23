@@ -12,6 +12,7 @@ use crate::api::types::{Answer, Question, SystemOneRequest};
 use crate::decisions::Action;
 use crate::decisions::AntView;
 use crate::decisions::jev::{STEP_QUESTION, build_request};
+use crate::decisions::questions::DEFAULT_STEP;
 use crate::probe::ask_and_wait;
 use crate::world::grid::Dir;
 
@@ -22,6 +23,7 @@ fn crowded_view(order: &str) -> AntView<'_> {
     AntView {
         id: AntId(0),
         order,
+        instructions: DEFAULT_STEP,
         options: Dir::COMPASS
             .iter()
             .copied()
@@ -42,6 +44,7 @@ fn blind_view(order: &str) -> AntView<'_> {
     AntView {
         id: AntId(0),
         order,
+        instructions: DEFAULT_STEP,
         options: Dir::COMPASS
             .iter()
             .copied()
@@ -244,6 +247,7 @@ fn row(client: &Client, order: &str, options: &[Dir]) {
     let view = AntView {
         id: AntId(0),
         order,
+        instructions: DEFAULT_STEP,
         options: options.iter().copied().map(Action::Walk).collect(),
         sightings: crowded_view(order).sightings,
         carrying: false,

@@ -34,28 +34,55 @@ pub fn plant_first_fruits(
     grid: Res<Grid>,
     nest: Res<Nest>,
     mut occupancy: ResMut<Occupancy>,
+    scenario: Option<Res<super::scenario::Scenario>>,
 ) {
+    // On a task board the fruit lies where the board says, or the puzzle would
+    // be different every time it is tried — and trying again is the point.
+    if let Some(scenario) = scenario {
+        for (x, y) in &scenario.fruit {
+            plant_at(&mut commands, *grid, &mut occupancy, IVec2::new(*x, *y));
+        }
+        return;
+    }
     for _ in 0..FRUIT_TARGET {
         plant(&mut commands, *grid, *nest, &mut occupancy);
     }
 }
 
+/// The ground a fruit needs: where the board is, where the nest is, and what
+/// already stands on it.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Ground<'w> {
+    grid: Res<'w, Grid>,
+    nest: Res<'w, Nest>,
+    occupancy: ResMut<'w, Occupancy>,
+}
+
 pub fn regrow(
     mut commands: Commands,
     time: Res<Time>,
-    grid: Res<Grid>,
-    nest: Res<Nest>,
-    mut occupancy: ResMut<Occupancy>,
+    mut ground: Ground,
     mut regrowth: ResMut<Regrowth>,
     fruits: Query<&Fruit>,
+    scenario: Option<Res<super::scenario::Scenario>>,
 ) {
+    // A task board does not top itself up. What is there is what there is, and
+    // that is what makes it a task.
+    if scenario.is_some() {
+        return;
+    }
     if !regrowth.0.tick(time.delta()).just_finished() {
         return;
     }
     if fruits.iter().count() >= FRUIT_TARGET {
         return;
     }
-    plant(&mut commands, *grid, *nest, &mut occupancy);
+    plant(
+        &mut commands,
+        *ground.grid,
+        *ground.nest,
+        &mut ground.occupancy,
+    );
 }
 
 /// Puts one fruit on a free cell outside the nest. Nothing grows in the nest —
@@ -69,10 +96,21 @@ fn plant(commands: &mut Commands, grid: Grid, nest: Nest, occupancy: &mut Occupa
     else {
         return; // board full, which the target count makes unlikely
     };
+    plant_at(commands, grid, occupancy, cell);
+}
+
+/// One fruit on a named cell. A cell already taken — or under water — is left
+/// alone rather than overwritten.
+fn plant_at(commands: &mut Commands, grid: Grid, occupancy: &mut Occupancy, cell: IVec2) {
+    if !occupancy.is_free(grid, cell) {
+        warn!("no room for a fruit at {cell:?}");
+        return;
+    }
 
     let fruit = commands
         .spawn((
             Name::new("fruit"),
+            super::LevelEntity,
             Fruit,
             GridPos(cell),
             Sprite::from_color(FRUIT, Vec2::splat(CELL_SIZE * 0.46)),

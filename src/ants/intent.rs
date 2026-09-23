@@ -7,14 +7,15 @@
 
 use bevy::prelude::*;
 
-use crate::config::VISION_RADIUS;
+use crate::config::{PLANK_GIVE_UP_TICKS, VISION_RADIUS};
 use crate::decisions::ThinkTimer;
 use crate::world::fruit::Fruit;
-use crate::world::grid::{Dir, Grid, GridPos, Occupancy};
+use crate::world::grid::{Dir, Grid, GridPos, Occupancy, Occupant, Terrain};
 use crate::world::nest::{Nest, Stores};
+use crate::world::plank::{Plank, nearest_crossing};
 use crate::world::scent::Scent;
 
-use super::components::{Carrying, Facing, MoveAnim};
+use super::components::{AntId, Carrying, Facing, MoveAnim};
 use super::movement::{ON_THE_BACK, start_step};
 
 /// What an ant is busy with. Absent means: ready for a new decision.
@@ -26,6 +27,20 @@ pub enum Intent {
     Fetch(Entity),
     /// Carry what you hold to the nest and put it down.
     CarryHome,
+    /// Walk to the plank and pick it up.
+    TakePlank(Entity),
+    /// Carrying it to the nearest crossing, where it goes down across the
+    /// water. One decision, many seconds of work (rule 3).
+    ///
+    /// `best` is the closest the ant has come to the crossing and `stale` how
+    /// many ticks it has failed to beat that. Without them the carry has no
+    /// ending: blocked by a crowd it cannot get round, an ant would hold the
+    /// plank for the rest of the game and never be asked anything again.
+    HoldPlank {
+        plank: Entity,
+        best: i32,
+        stale: u32,
+    },
     /// Follow the scent uphill, which is the way home. No direction is kept:
     /// the slope is read again at every step, because a trail bends and the one
     /// the model named is only its start.
@@ -62,6 +77,7 @@ pub fn pursue_intents(
     board: BoardParts,
     mut ants: Busy,
     fruits: Query<&GridPos, With<Fruit>>,
+    mut planks: Query<(&mut Plank, Option<&GridPos>), Without<AntId>>,
 ) {
     let BoardParts {
         grid,
@@ -75,6 +91,125 @@ pub fn pursue_intents(
 
     for (entity, position, mut facing, mut carrying, mut timer, mut intent) in &mut ants {
         match *intent {
+            Intent::TakePlank(plank) => {
+                let Ok((mut state, lying_at)) = planks.get_mut(plank) else {
+                    done(&mut commands, entity, &mut timer);
+                    continue;
+                };
+                // Somebody was quicker, or it is already down. Either way this
+                // intent is void.
+                let Some(lying_at) = lying_at.map(|at| at.0) else {
+                    done(&mut commands, entity, &mut timer);
+                    continue;
+                };
+                if !state.free_to_take() {
+                    done(&mut commands, entity, &mut timer);
+                    continue;
+                }
+
+                if next_to(position.0, lying_at) {
+                    state.carrier = Some(entity);
+                    facing.0 = Dir::nearest(lying_at - position.0);
+                    // It leaves the board the moment it is lifted, so nobody
+                    // else is offered it and nothing walks into it.
+                    commands.entity(plank).remove::<GridPos>();
+                    occupancy.vacate(grid, lying_at, plank);
+                    *intent = Intent::HoldPlank {
+                        plank,
+                        best: i32::MAX,
+                        stale: 0,
+                    };
+                } else {
+                    walk(
+                        &mut commands,
+                        &mut occupancy,
+                        grid,
+                        entity,
+                        position.0,
+                        lying_at,
+                        &mut facing,
+                    );
+                }
+            }
+
+            Intent::HoldPlank { plank, best, stale } => {
+                let Ok((mut state, _)) = planks.get_mut(plank) else {
+                    done(&mut commands, entity, &mut timer);
+                    continue;
+                };
+                if state.laid || state.carrier != Some(entity) {
+                    done(&mut commands, entity, &mut timer);
+                    continue;
+                }
+
+                let target = match state.target {
+                    Some(target) => target,
+                    None => match nearest_crossing(grid, &occupancy, position.0) {
+                        Some(found) => {
+                            state.target = Some(found);
+                            found
+                        }
+                        None => {
+                            // No water worth bridging. Put it down and think
+                            // again rather than carry it for ever.
+                            drop_plank(&mut commands, &mut occupancy, grid, plank, position.0);
+                            state.carrier = None;
+                            done(&mut commands, entity, &mut timer);
+                            continue;
+                        }
+                    },
+                };
+
+                // No headway for long enough: put it down where it stands and
+                // ask again. Another ant may have a clearer run at it, and a
+                // plank on the ground is at least a plank somebody can find.
+                let reach = (target - position.0).abs().max_element();
+                let (best, stale) = if reach < best {
+                    (reach, 0)
+                } else {
+                    (best, stale + 1)
+                };
+                if stale > PLANK_GIVE_UP_TICKS {
+                    drop_plank(&mut commands, &mut occupancy, grid, plank, position.0);
+                    state.carrier = None;
+                    state.target = None;
+                    debug!("gave up carrying the plank at {:?}", position.0);
+                    done(&mut commands, entity, &mut timer);
+                    continue;
+                }
+                *intent = Intent::HoldPlank { plank, best, stale };
+
+                if next_to(position.0, target) {
+                    // Down it goes, and the river has a crossing.
+                    occupancy.set_terrain(grid, target, Terrain::Bridge);
+                    state.laid = true;
+                    state.carrier = None;
+                    // Back onto a cell — it is lying on one again. Without the
+                    // `GridPos` the sprite still counts as carried and is
+                    // hidden, and the crossing loses the thing that made it.
+                    // Not put back into `Occupancy`: it is the floor now, and
+                    // the whole point is that ants walk over it.
+                    commands.entity(plank).insert((
+                        GridPos(target),
+                        Transform::from_translation(
+                            grid.to_screen(target).extend(crate::world::render::Z_FRUIT),
+                        ),
+                    ));
+                    info!("the plank is down across {target:?}");
+                    done(&mut commands, entity, &mut timer);
+                } else {
+                    walk(
+                        &mut commands,
+                        &mut occupancy,
+                        grid,
+                        entity,
+                        position.0,
+                        target,
+                        &mut facing,
+                    );
+                }
+            }
+
             Intent::FollowScent { left } => {
                 // Home in sight: from here the ant walks straight there, which
                 // is the next decision rather than this one.
@@ -193,6 +328,65 @@ pub fn pursue_intents(
 fn done(commands: &mut Commands, ant: Entity, timer: &mut ThinkTimer) {
     commands.entity(ant).remove::<Intent>();
     timer.ask_now();
+}
+
+/// A plank whose carrier stopped carrying it goes back on the ground.
+///
+/// `Action::LetGoPlank` only takes the intent away — the ant says it is done,
+/// and so does any other decision that replaces `HoldPlank`, such as a new
+/// order arriving mid-carry. Putting the thing down is the board's business,
+/// and this is where the two are reconciled. Without it a plank would follow an
+/// ant that had long stopped thinking about it, and never be seen again.
+pub fn drop_abandoned_planks(
+    mut commands: Commands,
+    grid: Res<Grid>,
+    mut occupancy: ResMut<Occupancy>,
+    mut planks: Query<(Entity, &mut Plank), Without<AntId>>,
+    holders: Query<(&GridPos, Option<&Intent>), With<AntId>>,
+) {
+    let grid = *grid;
+    for (plank, mut state) in &mut planks {
+        let Some(carrier) = state.carrier else {
+            continue;
+        };
+        if state.laid {
+            continue;
+        }
+        let Ok((at, intent)) = holders.get(carrier) else {
+            warn!("the plank is held by an ant that is gone");
+            continue;
+        };
+        if matches!(intent, Some(Intent::HoldPlank { plank: held, .. }) if *held == plank) {
+            continue; // still on the job
+        }
+        state.carrier = None;
+        state.target = None;
+        drop_plank(&mut commands, &mut occupancy, grid, plank, at.0);
+    }
+}
+
+/// Puts the plank back on the ground beside `near`, wherever there is room.
+fn drop_plank(
+    commands: &mut Commands,
+    occupancy: &mut Occupancy,
+    grid: Grid,
+    plank: Entity,
+    near: IVec2,
+) {
+    // Where the ant stands is taken by the ant itself, so the plank goes to the
+    // first free neighbour.
+    let Some(cell) = Dir::COMPASS
+        .into_iter()
+        .map(|direction| near + direction.offset())
+        .find(|cell| occupancy.is_free(grid, *cell))
+    else {
+        return; // nowhere to put it; it stays in hand until there is room
+    };
+    occupancy.occupy(grid, cell, Occupant::Plank(plank));
+    commands.entity(plank).insert((
+        GridPos(cell),
+        Transform::from_translation(grid.to_screen(cell).extend(crate::world::render::Z_FRUIT)),
+    ));
 }
 
 fn next_to(here: IVec2, there: IVec2) -> bool {
@@ -379,16 +573,21 @@ mod tests {
 
     #[test]
     fn and_one_more_carries_it_home() {
-        let mut fixture = fixture(IVec2::new(5, 5), IVec2::new(5, 9));
+        // Right next to the nest, so the test stays about putting the fruit
+        // down and not about how wide the board happens to be.
+        let ant_at = Nest::default().min - IVec2::ONE;
+        let mut fixture = fixture(ant_at, ant_at + IVec2::Y);
+
         fixture.decide(Action::Fetch {
             fruit: fixture.fruit,
             dir: Dir::North,
-            distance: 4,
+            distance: 1,
         });
-        fixture.run(3.0);
+        fixture.run(1.0);
+        assert!(fixture.carrying().is_some(), "picked it up");
 
         fixture.decide(Action::CarryHome);
-        fixture.run(6.0);
+        fixture.run(3.0);
 
         assert_eq!(fixture.stored(), 1);
         assert_eq!(fixture.carrying(), None, "hands free again");
@@ -422,27 +621,26 @@ mod tests {
         assert!(fixture.carrying().is_some(), "picked it up");
 
         {
-            // The way out, as a searching ant would have marked it: faintest far
-            // from the nest, strongest close to it.
+            // The way out, as a searching ant would have marked it: a path from
+            // here to the nest, faintest at this end and strongest at the other.
+            // Worked out from the nest's real position, so the test survives a
+            // change of board size.
+            let mut path = vec![ant_at];
+            let target = nest.nearest_cell(ant_at);
+            while *path.last().expect("not empty") != target {
+                let from = *path.last().expect("not empty");
+                let towards = target - from;
+                path.push(from + IVec2::new(towards.x.signum(), towards.y.signum()));
+            }
+
             let mut scent = fixture.app.world_mut().resource_mut::<Scent>();
-            for (steps, cell) in [
-                IVec2::new(19, 12),
-                IVec2::new(18, 11),
-                IVec2::new(17, 11),
-                IVec2::new(16, 10),
-                IVec2::new(15, 10),
-                IVec2::new(14, 9),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(index, cell)| (5 - index as u32, cell))
-            {
-                scent.deposit(grid, cell, steps);
+            for (steps, cell) in path.iter().rev().enumerate() {
+                scent.deposit(grid, *cell, steps as u32);
             }
         }
 
         fixture.decide(Action::FollowScent(Dir::West));
-        fixture.run(3.0);
+        fixture.run(20.0);
 
         let position = fixture
             .app

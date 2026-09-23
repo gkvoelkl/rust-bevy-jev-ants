@@ -23,6 +23,13 @@ pub struct Reply {
     pub response: SystemOneResponse,
     /// Measured around the whole request, which is what the HUD shows.
     pub latency_ms: u32,
+    /// The body exactly as it arrived, before anything here made sense of it.
+    ///
+    /// Kept so the inspector can show what the API really said rather than our
+    /// reading of it. That difference is the point: an answer type this game
+    /// does not model yet parses as `Unsupported` and would vanish from a
+    /// re-serialised copy, while here it is plainly there to be seen.
+    pub body: String,
 }
 
 pub struct Client {
@@ -98,5 +105,6 @@ fn interpret(result: ehttp::Result<ehttp::Response>, started: Instant) -> Result
     Ok(Reply {
         response: parsed,
         latency_ms,
+        body: String::from_utf8_lossy(&response.bytes).into_owned(),
     })
 }

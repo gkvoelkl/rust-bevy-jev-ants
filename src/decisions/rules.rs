@@ -43,7 +43,7 @@ impl DecisionSource for RuleSource {
     }
 }
 
-fn decide(ant: &AntView<'_>) -> Action {
+pub(crate) fn decide(ant: &AntView<'_>) -> Action {
     // Straight in, if the nest is there to be seen.
     if let Some(home) = ant
         .options
@@ -53,11 +53,15 @@ fn decide(ant: &AntView<'_>) -> Action {
         return *home;
     }
 
-    // Otherwise the trail home, which is only ever offered to a carrier.
-    if let Some(trail) = ant
-        .options
-        .iter()
-        .find(|option| matches!(option, Action::FollowScent(_)))
+    // Otherwise the trail home — but only with something to carry. Every ant
+    // next to a trail is offered it now, because the queen may call the colony
+    // back; the rules read no order, so for them it is never the move when the
+    // hands are empty. A searching ant that walked home would stop searching.
+    if ant.carrying
+        && let Some(trail) = ant
+            .options
+            .iter()
+            .find(|option| matches!(option, Action::FollowScent(_)))
     {
         return *trail;
     }
@@ -76,9 +80,21 @@ fn decide(ant: &AntView<'_>) -> Action {
         return fetch;
     }
 
+    // What is left is wandering, and wandering means walking. Since the trail
+    // is offered to empty-handed ants too, a plain pick over the whole list
+    // would sometimes send a searching ant home for no reason at all — which
+    // is not a random walk, it is a different decision.
     let mut rng = rand::rng();
-    ant.options
+    let wandering: Vec<Action> = ant
+        .options
+        .iter()
+        .copied()
+        .filter(|option| matches!(option, Action::Walk(_)))
+        .collect();
+
+    wandering
         .choose(&mut rng)
+        .or_else(|| ant.options.choose(&mut rng))
         .copied()
         .unwrap_or(Action::Wait)
 }
@@ -94,9 +110,19 @@ mod tests {
         AntView {
             id: AntId(0),
             order: "",
+            instructions: crate::decisions::questions::DEFAULT_STEP,
             options,
             sightings: Vec::new(),
             carrying: false,
+        }
+    }
+
+    /// The same, with a fruit on its back. `carrying` is what the trail rule
+    /// turns on, so a test about a carrier has to say so.
+    fn carrying_view(options: Vec<Action>) -> AntView<'static> {
+        AntView {
+            carrying: true,
+            ..view(options)
         }
     }
 
@@ -110,7 +136,7 @@ mod tests {
 
     #[test]
     fn carrying_beats_everything() {
-        let decision = decide(&view(vec![
+        let decision = decide(&carrying_view(vec![
             Action::CarryHome,
             Action::Walk(Dir::North),
             Action::Wait,
@@ -129,7 +155,7 @@ mod tests {
     /// Seeing the nest beats following a trail towards it.
     #[test]
     fn the_nest_in_sight_beats_the_trail() {
-        let decision = decide(&view(vec![
+        let decision = decide(&carrying_view(vec![
             Action::FollowScent(Dir::West),
             Action::CarryHome,
             Action::Wait,
@@ -140,12 +166,25 @@ mod tests {
     /// Out of sight of the nest, the trail is what a carrier has.
     #[test]
     fn a_carrier_out_of_sight_follows_the_trail() {
-        let decision = decide(&view(vec![
+        let decision = decide(&carrying_view(vec![
             Action::Walk(Dir::North),
             Action::FollowScent(Dir::West),
             Action::Wait,
         ]));
         assert_eq!(decision, Action::FollowScent(Dir::West));
+    }
+
+    /// The trail is on an empty-handed ant's list too, and the baseline still
+    /// must not take it: it has no order to obey, and searching is its job.
+    #[test]
+    fn empty_handed_the_baseline_keeps_searching() {
+        let options = vec![
+            Action::FollowScent(Dir::West),
+            Action::Walk(Dir::North),
+            Action::Wait,
+        ];
+        let decision = decide(&view(options));
+        assert_ne!(decision, Action::FollowScent(Dir::West));
     }
 
     #[test]

@@ -15,16 +15,11 @@ use crate::api::types::{Answer, MODEL, Question, SystemOneRequest, SystemOneResp
 use crate::api::{Client, Pending, REQUEST_TIMEOUT};
 use crate::config::{MAX_IN_FLIGHT, MIN_CONFIDENCE, VISION_RADIUS};
 
-use super::{Action, AntMove, AntView, DecisionSource, Origin};
+use super::{Action, AntMove, AntView, DecisionSource, Exchange, Link, Origin, Outcome};
 
 /// The question key. One question in step 1; `urgency` and `follows_order`
 /// join it against the same state in step 2.
 pub const STEP_QUESTION: &str = "step";
-
-/// Moved to `assets/questions.ron` later — rewording this text without
-/// recompiling is the actual development effort.
-const STEP_INSTRUCTIONS: &str = "Which single step should this ant take now? \
-     Follow the ant queen's order whenever it applies.";
 
 /// A request whose answer has not arrived yet.
 struct InFlight {
@@ -32,9 +27,43 @@ struct InFlight {
     /// Exactly the options this ant was offered. An answer is checked against
     /// this list, so an action that was never offered can never be carried out.
     offered: Vec<Action>,
+    /// What else went out with it, kept so the inspector can show the exchange
+    /// whole instead of a reconstruction of it. The ant will have moved on by
+    /// the time the answer lands, and its view with it.
+    asked: Asked,
     pending: Pending,
     /// Insurance against a callback that never fires; `ehttp` already times out.
     deadline: Instant,
+}
+
+/// The request side of an exchange, held while the answer is out.
+struct Asked {
+    order: String,
+    carrying: bool,
+    sightings: Vec<String>,
+    instructions: String,
+    /// The body that went out, formatted for reading. The wire carries it
+    /// compact; the indentation is the only difference.
+    body: String,
+}
+
+/// Puts the two halves together once the answer is in.
+fn exchange(flight: &InFlight, outcome: Outcome, response: Option<String>) -> Exchange {
+    Exchange {
+        ant: flight.ant,
+        order: flight.asked.order.clone(),
+        carrying: flight.asked.carrying,
+        sightings: flight.asked.sightings.clone(),
+        instructions: flight.asked.instructions.clone(),
+        request: flight.asked.body.clone(),
+        response,
+        offered: flight
+            .offered
+            .iter()
+            .map(|option| (option.key(), option.description()))
+            .collect(),
+        outcome,
+    }
 }
 
 pub struct JevSource {
@@ -43,6 +72,11 @@ pub struct JevSource {
     /// Answers thrown away, and questions that never went out. Reported rather
     /// than papered over — there is nothing standing in for the model.
     discarded: u32,
+    /// How the last round trip went, for the lamp. Not the same as `discarded`:
+    /// an answer can arrive perfectly well and still be unusable.
+    link: Link,
+    /// Finished exchanges waiting to be picked up by the world.
+    exchanges: Vec<Exchange>,
 }
 
 impl JevSource {
@@ -51,6 +85,8 @@ impl JevSource {
             client,
             in_flight: Vec::new(),
             discarded: 0,
+            link: Link::Untried,
+            exchanges: Vec::new(),
         }
     }
 
@@ -74,10 +110,20 @@ impl DecisionSource for JevSource {
             return;
         }
 
-        let pending = self.client.send(&build_request(ant));
+        let request = build_request(ant);
+        let body = serde_json::to_string_pretty(&request)
+            .unwrap_or_else(|error| format!("could not be shown: {error}"));
+        let pending = self.client.send(&request);
         self.in_flight.push(InFlight {
             ant: ant.id,
             offered: ant.options.clone(),
+            asked: Asked {
+                order: ant.order.to_string(),
+                carrying: ant.carrying,
+                sightings: ant.sightings.clone(),
+                instructions: ant.instructions.to_string(),
+                body,
+            },
             pending,
             deadline: Instant::now() + REQUEST_TIMEOUT * 2,
         });
@@ -91,25 +137,67 @@ impl DecisionSource for JevSource {
         self.discarded
     }
 
+    fn link(&self) -> Link {
+        self.link.clone()
+    }
+
+    fn drain_exchanges(&mut self) -> Vec<Exchange> {
+        std::mem::take(&mut self.exchanges)
+    }
+
     fn poll(&mut self) -> Vec<AntMove> {
         let now = Instant::now();
         let mut moves = Vec::new();
         let mut failed: Vec<(AntId, String)> = Vec::new();
 
+        // The line is judged by the round trip alone. An answer that arrives and
+        // is then refused below still came back, and the lamp must not call that
+        // a broken connection.
+        let mut link: Option<Link> = None;
+
+        // Written whole, refused or not: the record is the point of the demo,
+        // and an answer that was thrown away is the more instructive half of it.
+        let mut records: Vec<Exchange> = Vec::new();
+
         self.in_flight
             .retain_mut(|flight| match flight.pending.poll() {
                 Some(Ok(reply)) => {
+                    link = Some(Link::Live);
+                    let probabilities = distribution(&reply.response);
+                    let body = Some(pretty(&reply.body));
                     match read_step(&reply.response, &flight.offered) {
-                        Ok((action, confidence)) => moves.push(AntMove {
-                            id: flight.ant,
-                            action,
-                            origin: Origin::Jev {
-                                confidence,
-                                latency_ms: reply.latency_ms,
-                                input_tokens: reply.response.usage.input_tokens,
-                            },
-                        }),
+                        Ok((action, confidence)) => {
+                            records.push(exchange(
+                                flight,
+                                Outcome::Taken {
+                                    chosen: action.key(),
+                                    confidence,
+                                    probabilities,
+                                    latency_ms: reply.latency_ms,
+                                    input_tokens: reply.response.usage.input_tokens,
+                                },
+                                body,
+                            ));
+                            moves.push(AntMove {
+                                id: flight.ant,
+                                action,
+                                origin: Origin::Jev {
+                                    confidence,
+                                    latency_ms: reply.latency_ms,
+                                    input_tokens: reply.response.usage.input_tokens,
+                                },
+                            });
+                        }
                         Err(reason) => {
+                            records.push(exchange(
+                                flight,
+                                Outcome::Refused {
+                                    reason: reason.clone(),
+                                    probabilities,
+                                    latency_ms: reply.latency_ms,
+                                },
+                                body,
+                            ));
                             failed.push((flight.ant, reason));
                         }
                     }
@@ -117,18 +205,46 @@ impl DecisionSource for JevSource {
                 }
                 Some(Err(error)) => {
                     warn!("{:?}: {error}", flight.ant);
+                    link = Some(Link::Down(error.to_string()));
+                    records.push(exchange(
+                        flight,
+                        Outcome::Failed {
+                            reason: error.to_string(),
+                        },
+                        None,
+                    ));
                     failed.push((flight.ant, error.to_string()));
                     false
                 }
                 None => {
                     if now >= flight.deadline {
-                        failed.push((flight.ant, "no answer before the deadline".to_string()));
+                        let reason = "no answer before the deadline".to_string();
+                        link = Some(Link::Down(reason.clone()));
+                        records.push(exchange(
+                            flight,
+                            Outcome::Failed {
+                                reason: reason.clone(),
+                            },
+                            None,
+                        ));
+                        failed.push((flight.ant, reason));
                         false
                     } else {
                         true
                     }
                 }
             });
+
+        self.exchanges.append(&mut records);
+
+        // A green from this frame beats a red from the same frame: with several
+        // requests in the air, one that came back says more about the line than
+        // one that has not.
+        if let Some(verdict) = link
+            && (verdict == Link::Live || self.in_flight.is_empty())
+        {
+            self.link = verdict;
+        }
 
         for (ant, reason) in failed {
             self.discard(ant, &reason);
@@ -150,7 +266,9 @@ pub fn build_request(ant: &AntView<'_>) -> SystemOneRequest {
     questions.insert(
         STEP_QUESTION.to_string(),
         Question::Choice {
-            instructions: STEP_INSTRUCTIONS.to_string(),
+            // Whatever the text says right now — it comes from the asset, and it
+            // may well have been reworded since the last request went out.
+            instructions: ant.instructions.to_string(),
             criteria,
         },
     );
@@ -189,8 +307,44 @@ pub fn build_request(ant: &AntView<'_>) -> SystemOneRequest {
     }
 }
 
+/// The body as it came, indented so it can be read.
+///
+/// If it will not parse it is shown exactly as it arrived — an answer the game
+/// could not make sense of is the one most worth looking at unaltered.
+fn pretty(body: &str) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|parsed| serde_json::to_string_pretty(&parsed).ok())
+        .unwrap_or_else(|| body.to_string())
+}
+
+/// The full distribution the model returned, highest first.
+///
+/// Read out even when the answer is about to be refused. It costs nothing — it
+/// came in the same response — and it is the only place where the shape of the
+/// model's uncertainty is visible rather than summed up into one number.
+fn distribution(response: &SystemOneResponse) -> Vec<(String, f32)> {
+    let Some(Answer::Choice { probabilities, .. }) = response.answers.get(STEP_QUESTION) else {
+        return Vec::new();
+    };
+    let mut sorted: Vec<(String, f32)> = probabilities
+        .iter()
+        .map(|(key, weight)| (key.clone(), *weight))
+        .collect();
+    // Ties broken by key, so the same answer always lists the same way.
+    sorted.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    sorted
+}
+
 /// The answer, checked twice: the option must have been offered, and the model
-/// must be sure enough. Otherwise the ant uses the classic rules.
+/// must be sure enough. Either check failing means the ant does not act this
+/// round — nothing decides in its place.
 fn read_step(response: &SystemOneResponse, offered: &[Action]) -> Result<(Action, f32), String> {
     let Some(Answer::Choice {
         choice, confidence, ..
@@ -228,6 +382,7 @@ mod tests {
         AntView {
             id: AntId(7),
             order,
+            instructions: crate::decisions::questions::DEFAULT_STEP,
             options,
             sightings,
             carrying: false,
@@ -275,6 +430,74 @@ mod tests {
         .expect("parses")
     }
 
+    /// A whole distribution, so the inspector has something with a shape.
+    fn spread(pairs: &[(&str, f32)], choice: &str, confidence: f32) -> SystemOneResponse {
+        let probabilities: Vec<String> = pairs
+            .iter()
+            .map(|(key, weight)| format!("\"{key}\":{weight}"))
+            .collect();
+        serde_json::from_str(&format!(
+            r#"{{"model":"jev-1.13.0",
+                 "answers":{{"step":{{"type":"choice","choice":"{choice}",
+                              "probabilities":{{{}}},
+                              "confidence":{confidence}}}}},
+                 "usage":{{"input_tokens":180,"output_tokens":1}}}}"#,
+            probabilities.join(",")
+        ))
+        .expect("parses")
+    }
+
+    /// The numbers the inspector draws. Highest first, because that is the only
+    /// order in which a distribution reads as an answer.
+    #[test]
+    fn the_distribution_comes_back_sorted() {
+        let response = spread(
+            &[("east", 0.2), ("north", 0.62), ("stay", 0.18)],
+            "north",
+            0.5,
+        );
+        let sorted = distribution(&response);
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            ["north", "east", "stay"]
+        );
+    }
+
+    /// Ties resolve by key, so the same answer never lists two different ways.
+    #[test]
+    fn a_tie_is_broken_the_same_way_every_time() {
+        let response = spread(
+            &[("west", 0.25), ("east", 0.25), ("north", 0.5)],
+            "north",
+            0.4,
+        );
+        let sorted = distribution(&response);
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            ["north", "east", "west"]
+        );
+    }
+
+    /// The case the inspector exists for: the answer is refused, and the numbers
+    /// behind it survive anyway. Throwing them away with the answer would hide
+    /// exactly why it was refused.
+    #[test]
+    fn a_refused_answer_still_has_its_distribution() {
+        let response = spread(
+            &[("east", 0.34), ("north", 0.33), ("west", 0.33)],
+            "east",
+            0.05,
+        );
+        assert!(read_step(&response, &[Action::Walk(Dir::East)]).is_err());
+        assert_eq!(distribution(&response).len(), 3);
+    }
+
     #[test]
     fn a_confident_offered_answer_becomes_a_move() {
         let offered = [Action::Walk(Dir::East), Action::Wait];
@@ -292,8 +515,9 @@ mod tests {
     }
 
     /// A flat distribution means the model has nothing to go on — measured at
-    /// 0.16 to 0.19 when no order was given at all. Then the classic rules take
-    /// over, which is what keeps the ants moving instead of freezing.
+    /// 0.16 to 0.19 when no order was given at all. Such an answer is thrown
+    /// away and the ant stands still for a round; it is counted in the HUD
+    /// rather than covered up.
     #[test]
     fn an_answer_close_to_chance_is_refused() {
         let offered = [Action::Walk(Dir::East), Action::Wait];

@@ -123,7 +123,7 @@ impl Dir {
 }
 
 /// Dimensions of the board. Cheap to copy, so systems just take it by value.
-#[derive(Resource, Clone, Copy)]
+#[derive(Resource, Clone, Copy, Debug)]
 pub struct Grid {
     pub width: i32,
     pub height: i32,
@@ -166,20 +166,42 @@ impl Grid {
 #[derive(Component, Clone, Copy)]
 pub struct GridPos(pub IVec2);
 
-/// What stands on a cell. Both block movement — an ant walks around a fruit
-/// just as it walks around another ant — but the ant is told them apart, so
-/// "a fruit" never shows up in its view as "another ant".
+/// What stands on a cell. All of them block movement — an ant walks around a
+/// fruit just as it walks around another ant — but the ant is told them apart,
+/// so "a fruit" never shows up in its view as "another ant".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Occupant {
     Ant(Entity),
     Fruit(Entity),
+    /// Lying on the ground, waiting to be picked up. Too heavy for one ant.
+    Plank(Entity),
 }
 
 impl Occupant {
     pub fn entity(self) -> Entity {
         match self {
-            Occupant::Ant(entity) | Occupant::Fruit(entity) => entity,
+            Occupant::Ant(entity) | Occupant::Fruit(entity) | Occupant::Plank(entity) => entity,
         }
+    }
+}
+
+/// What a cell is made of, as opposed to what stands on it.
+///
+/// Ground is the ordinary case and the default everywhere, so a board that
+/// never mentions terrain behaves exactly as it did before there was any.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Terrain {
+    #[default]
+    Ground,
+    /// Not passable. One cell wide is still one cell too many without a plank.
+    Water,
+    /// Water with the plank across it. Walkable, and the only way over.
+    Bridge,
+}
+
+impl Terrain {
+    pub fn is_passable(self) -> bool {
+        !matches!(self, Terrain::Water)
     }
 }
 
@@ -188,17 +210,39 @@ impl Occupant {
 #[derive(Resource)]
 pub struct Occupancy {
     cells: Vec<Option<Occupant>>,
+    /// What each cell is made of. Kept here rather than beside it so that
+    /// `is_free` stays the one question everything asks — a system that walks
+    /// an ant must not have to remember to check the ground as well.
+    terrain: Vec<Terrain>,
 }
 
 impl Occupancy {
     pub fn new(grid: Grid) -> Self {
+        let size = (grid.width * grid.height) as usize;
         Self {
-            cells: vec![None; (grid.width * grid.height) as usize],
+            cells: vec![None; size],
+            terrain: vec![Terrain::Ground; size],
         }
     }
 
     pub fn is_free(&self, grid: Grid, cell: IVec2) -> bool {
-        grid.contains(cell) && self.cells[grid.index(cell)].is_none()
+        grid.contains(cell)
+            && self.cells[grid.index(cell)].is_none()
+            && self.terrain[grid.index(cell)].is_passable()
+    }
+
+    pub fn terrain_at(&self, grid: Grid, cell: IVec2) -> Terrain {
+        if !grid.contains(cell) {
+            return Terrain::Ground;
+        }
+        self.terrain[grid.index(cell)]
+    }
+
+    pub fn set_terrain(&mut self, grid: Grid, cell: IVec2, terrain: Terrain) {
+        if grid.contains(cell) {
+            let index = grid.index(cell);
+            self.terrain[index] = terrain;
+        }
     }
 
     /// What is on this cell. Out of bounds reads as empty; the edge of the

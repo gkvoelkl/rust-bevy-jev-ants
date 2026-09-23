@@ -107,6 +107,14 @@ pub fn apply_decisions(
             Action::CarryHome => {
                 commands.entity(entity).insert(Intent::CarryHome);
             }
+            Action::TakePlank { plank, .. } => {
+                commands.entity(entity).insert(Intent::TakePlank(plank));
+            }
+            Action::LetGoPlank => {
+                // The plank is put down by `pursue_intents`, which owns the
+                // board. Dropping the intent is how the ant says so.
+                commands.entity(entity).remove::<Intent>();
+            }
             Action::FollowScent(_) => {
                 // The direction is not carried over: the intent reads the slope
                 // again at every step.

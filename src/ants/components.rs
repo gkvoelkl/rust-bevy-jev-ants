@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::decisions::Action;
+use crate::decisions::{Action, Exchange};
 use crate::world::grid::Dir;
 
 // `GridPos` lives in `world/grid.rs`: it is a position on the board, and fruits
@@ -37,6 +37,15 @@ pub struct LastDecision {
     /// `None` means the classic rules decided, which have no confidence.
     pub confidence: Option<f32>,
 }
+
+/// The last complete exchange with the model for this ant — everything that was
+/// sent and everything that came back.
+///
+/// Kept per ant rather than in one list because that is how one reads it: click
+/// an ant, see what *it* was asked. Refused answers are kept too; the ant did
+/// not act on them, but they are the ones worth looking at.
+#[derive(Component, Default)]
+pub struct LastExchange(pub Option<Exchange>);
 
 /// A step in progress. Present only while the ant is walking, so `Without<MoveAnim>`
 /// is the test for "ready for a new decision".
