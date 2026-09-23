@@ -110,3 +110,7 @@ assets/         the question text and the levels
 
 Built with [Bevy](https://bevyengine.org) 0.19 and `bevy_egui`. One codebase for native
 and WASM.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
