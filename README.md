@@ -4,7 +4,7 @@ An ant colony where every ant asks [TypeSafe Jev](https://docs.typesafe.ai/intro
 what to do next. You are the queen, and your only control is a text field: you type a
 sentence, and twenty ants each decide for themselves what it means for them.
 
-![Level 1: eight ants fetching fruit, each label an intent from Jev](docs/screenshot.png)
+![Level 1: eight ants fetching fruit, each label an intent from Jev](/docs/screenshot.png)
 
 Above every ant is the intent it chose and how sure the model was — green when it is
 certain, red when it barely cleared the threshold. `scent south-west 0.77` is an ant that
