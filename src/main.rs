@@ -1,3 +1,9 @@
+// The offline tools — `--probe`, `--compare`, `--measure` — and the tests are
+// native only, and they are what several corners of the API client and the grid
+// exist for. In a web build those corners are genuinely unreachable, and saying
+// so nine times per compile buries the warnings that would matter.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+
 mod ants;
 mod api;
 mod config;
@@ -66,7 +72,34 @@ fn main() {
         primary_window: Some(Window {
             title: "Ant Colony — Step 1".into(),
             resolution: (1300u32, 860u32).into(),
+            // A window that hides behind the editor is a window nobody watches,
+            // and watching is the point. Meaningless in a browser tab, where
+            // the canvas below takes over.
+            #[cfg(not(target_arch = "wasm32"))]
             window_level: bevy::window::WindowLevel::AlwaysOnTop,
+            // The canvas `index.html` puts up, kept at the size of the box
+            // around it. Without the selector Bevy appends a second canvas of
+            // its own and the page has two.
+            #[cfg(target_arch = "wasm32")]
+            canvas: Some("#game".to_string()),
+            #[cfg(target_arch = "wasm32")]
+            fit_canvas_to_parent: true,
+            // Off, so that pasting works — and pasting is how a key gets into
+            // the dialog. Bevy's default has winit call `preventDefault()` on
+            // every `keydown` in the browser, and the paste event a browser
+            // fires is *the default action* of Ctrl/Cmd+V. Prevent that and no
+            // paste event is ever raised, which is what `bevy_egui` listens for
+            // on the document. The field then simply ignores the shortcut, with
+            // nothing in the console to say why.
+            //
+            // What it costs: the browser's own shortcuts work again over the
+            // canvas — F3 may open the find bar where the game means the intent
+            // layer, a right-click shows the browser menu, and Tab moves focus
+            // off the canvas until it is clicked again. All of that is worth
+            // less than being able to paste the key the game cannot start
+            // without.
+            #[cfg(target_arch = "wasm32")]
+            prevent_default_event_handling: false,
             ..default()
         }),
         ..default()

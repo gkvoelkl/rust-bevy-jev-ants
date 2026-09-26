@@ -5,7 +5,12 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-bevy = "0.19"
+# The game is 2D. Bevy's default features drag the whole 3D pipeline and the
+# audio stack in behind them, and in a web build that is megabytes of download
+# for code no ant ever reaches — `3d` and `audio` are dropped here. `2d` pulls
+# `default_platform` with it, so winit, the clipboard and webgl2 are all still
+# there.
+bevy = { version = "0.19", default-features = false, features = ["2d", "ui"] }
 rand = "0.9"
 bevy_egui = "0.42"
 ehttp = { version = "0.7", features = ["json"] }
@@ -20,3 +25,10 @@ dotenvy = "0.15"
 # Bevy is painfully slow in a debug build unless its dependencies are optimised.
 [profile.dev.package."*"]
 opt-level = 3
+
+# The browser has no operating system to ask for randomness, so `getrandom`
+# needs telling to use `crypto.getRandomValues` instead. The feature alone is
+# not enough — the `getrandom_backend` flag in `.cargo/config.toml` goes with
+# it. `rand` reaches this through `bevy` and through the fruit scatter.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }

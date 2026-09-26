@@ -1,0 +1,36 @@
+# The web build. `trunk serve` for development, `trunk build --release` to ship.
+
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+port = 8080
+open = false
+
+# The whole reason a web build needs anything but a static server.
+#
+# The API cannot be called from a page: the CORS preflight for /v1/systemone is
+# refused from every origin tried, its own console included, so a browser never
+# gets to send the request (see `api::DEFAULT_BASE_URL`). The web build calls
+# /api on its own origin instead, and this forwards it.
+#
+# Not straight to the API, though — to `tools/dev-proxy.py`, which has to be
+# running:
+#
+#     python3 tools/dev-proxy.py
+#
+# The API also reads `Origin` on the request itself and refuses one it does not
+# know, and a browser attaches `Origin` to every POST, same-origin or not.
+# Trunk's proxy forwards headers as they come and cannot drop one, so that
+# header travelled through and every ant's request came back "400 Disallowed
+# CORS origin". The script's whole job is to leave it out.
+#
+# A deployment needs neither: one rule in its web server forwards /api and drops
+# the header in the same breath — nginx `proxy_pass` plus
+# `proxy_set_header Origin "";`. Nothing in the game changes either way. Both
+# only forward; the player's key rides in the Authorization header and is never
+# stored on the way.
+[[proxy]]
+rewrite = "/api/"
+backend = "http://127.0.0.1:8081/"

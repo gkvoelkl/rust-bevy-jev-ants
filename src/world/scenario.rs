@@ -22,6 +22,30 @@ pub const SCENARIO_DIR: &str = "assets/scenarios";
 /// teaches the loop, the second asks something of it.
 pub const LEVELS: [&str; 2] = ["fruit", "plank"];
 
+/// The boards as they are on disk, compiled into the binary.
+///
+/// The browser has no file system, and a web build that could only offer the
+/// open field would be missing the game: the levels are where a sentence is
+/// worth saying twice. On native the file is still read at startup, so editing
+/// a board needs no rebuild — this copy only has to keep up with it, which is
+/// what `the_web_build_ships_the_boards_on_disk` is for.
+///
+/// The length is tied to `LEVELS`, so a third level that nobody compiles in is
+/// a build error rather than a board that quietly vanishes in the browser.
+#[cfg(any(target_arch = "wasm32", test))]
+const BUILT_IN: [(&str, &str); LEVELS.len()] = [
+    ("fruit", include_str!("../../assets/scenarios/fruit.ron")),
+    ("plank", include_str!("../../assets/scenarios/plank.ron")),
+];
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn built_in(name: &str) -> Option<String> {
+    BUILT_IN
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|(_, text)| (*text).to_string())
+}
+
 /// One task. Everything the sandbox would take from `config.rs` comes from here
 /// instead, so a board can be small and crowded where the open field is wide.
 #[derive(Resource, Clone, Deserialize)]
@@ -66,24 +90,23 @@ impl Scenario {
 
     /// Reads one board by name, or says why it could not. A bad file is never
     /// a crash: the game says so and falls back to the open field.
+    ///
+    /// Where the text comes from is the only thing that differs between the two
+    /// builds — the parsing and the checking are the same, so a board cannot be
+    /// sound in one and broken in the other.
     pub fn load(name: &str) -> Result<Self, String> {
         let path = format!("{SCENARIO_DIR}/{name}.ron");
 
         #[cfg(target_arch = "wasm32")]
-        {
-            let _ = path;
-            Err("no file system in the browser".to_string())
-        }
+        let text = built_in(name).ok_or_else(|| format!("{path}: not in the web build"))?;
 
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let text =
-                std::fs::read_to_string(&path).map_err(|error| format!("{path}: {error}"))?;
-            let scenario: Scenario =
-                ron::from_str(&text).map_err(|error| format!("{path}: {error}"))?;
-            scenario.check().map_err(|why| format!("{path}: {why}"))?;
-            Ok(scenario)
-        }
+        let text = std::fs::read_to_string(&path).map_err(|error| format!("{path}: {error}"))?;
+
+        let scenario: Scenario =
+            ron::from_str(&text).map_err(|error| format!("{path}: {error}"))?;
+        scenario.check().map_err(|why| format!("{path}: {why}"))?;
+        Ok(scenario)
     }
 
     /// Every level that reads. A broken board is left out with a line in the
@@ -206,6 +229,22 @@ mod tests {
         for level in &levels {
             assert!(!level.name.trim().is_empty());
             assert!(!level.briefing.trim().is_empty());
+        }
+    }
+
+    /// The web build reads no files, so it carries copies. A copy that has
+    /// drifted from the board on disk is the worst kind of bug here: both
+    /// builds work, and they play different games.
+    #[test]
+    fn the_web_build_ships_the_boards_on_disk() {
+        for name in LEVELS {
+            let on_disk = std::fs::read_to_string(format!("{SCENARIO_DIR}/{name}.ron"))
+                .expect("the level is on disk");
+            let compiled = built_in(name).expect("the level is compiled in too");
+            assert_eq!(
+                on_disk, compiled,
+                "'{name}' differs between disk and binary"
+            );
         }
     }
 

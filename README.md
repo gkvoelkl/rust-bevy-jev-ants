@@ -25,9 +25,44 @@ cargo run --release
 Type an order into the field at the bottom and press Enter. Until then the colony sleeps
 in its nest and not a single request goes out.
 
-Without a key the game starts, but nothing moves: there is no rule-based fallback on
-purpose, because a colony that kept working without the model would hide what the model
-contributes.
+`.env` is optional. Started without a key, the game asks for one in a dialog before
+anything else — that key is used for this run only and is never written down, so the next
+start asks again.
+
+There is no way past that dialog but a key, and no rule-based fallback behind it. That is
+on purpose: a colony that kept working without the model would hide what the model
+contributes, so without a key there is nothing to play.
+
+### In the browser
+
+```sh
+python3 tools/dev-proxy.py    # in one terminal
+trunk serve --release         # in another — http://localhost:8080
+```
+
+Same game, same code — no file system, so the boards and the question text are compiled
+in, and the key is always asked for in the dialog.
+
+Two commands, not one, because of the API. A page cannot call it at all: the CORS
+preflight is refused from every origin tried on 2026-09-24, its own console included, so
+the browser never sends the request. The web build therefore calls `/api/...` on its own
+origin and lets the server forward it. But the API reads `Origin` on the forwarded request
+too, and refuses one it does not know — and a browser attaches `Origin` to every POST. So
+the thing that forwards has to drop that header, which `Trunk.toml` cannot; that is all
+`tools/dev-proxy.py` does.
+
+A deployment needs neither command, just one rule in its web server: forward
+`/api` and drop the `Origin` header while doing it (nginx: `proxy_pass` plus
+`proxy_set_header Origin "";`). Nothing in the game changes. The key travels in the
+`Authorization` header, is only passed through, and is never stored at either end.
+
+```sh
+trunk build --release         # just the bundle, in dist/
+```
+
+The bundle is 38 MB, about 12 MB over the wire once the server compresses it — serve it
+with gzip or brotli on. Bevy's 3D pipeline and audio stack are switched off in
+`Cargo.toml`, since this game is sprites and text; that alone was 9 MB.
 
 ## Playing
 

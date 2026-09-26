@@ -1,5 +1,9 @@
 /target
 /internals
+
+# The web bundle. Built with `trunk build --release`, not committed.
+/dist
+
 # Secrets: never commit. The example file without a value is the only exception.
 .env
 .env.*
@@ -7,5 +11,8 @@
 
 # JetBrains
 /.idea
+
+# Finder leaves these in every directory it is asked to look at.
+.DS_Store
 
 CLAUDE.md

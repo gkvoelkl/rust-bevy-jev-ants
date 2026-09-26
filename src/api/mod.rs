@@ -13,8 +13,41 @@ use crossbeam_channel::{Receiver, bounded};
 
 use types::{ApiError, SystemOneRequest, SystemOneResponse};
 
-/// Overridable, so a proxy can be slipped in without touching the code.
+/// Overridable through `TYPESAFE_BASE_URL`, so a proxy can be slipped in
+/// without touching the code.
+#[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
+
+/// The browser cannot reach the API directly, so the web build asks whoever
+/// served the page and lets that forward the request.
+///
+/// This is `ANTS.md` §5.3 answered, and the answer is: blocked. Measured on
+/// 2026-09-24, in two parts, because the API refuses a page twice over:
+///
+///   * The CORS **preflight** for `/v1/systemone` came back `400 Disallowed
+///     CORS origin` from every origin tried — `http://localhost:8080`, `:3000`,
+///     `:5173`, `http://127.0.0.1:8080`, `null`, and the API's own
+///     `https://console.typesafe.ai` — with no `access-control-allow-origin`
+///     header at all. An `Authorization` header always forces a preflight, so a
+///     page never gets to send the request. Direct calls are out.
+///   * The **request itself** is judged by its `Origin` too, and there the
+///     allowlist is real: the same POST that a browser refuses is answered
+///     `422` (body invalid, auth fine) with no `Origin`, or with the console's
+///     — and `400 Disallowed CORS origin` with `http://localhost:8080`.
+///
+/// The second half is the one that bites a proxy, because a browser attaches
+/// `Origin` to every POST, same-origin or not, and a forwarding proxy hands it
+/// straight on. Whatever forwards `/api` must therefore **drop that header**:
+/// `tools/dev-proxy.py` while developing, `proxy_set_header Origin "";` or its
+/// equivalent in a deployment.
+///
+/// A relative URL rather than a configured host, because the proxy then *is*
+/// the configuration. The player's key rides in the `Authorization` header and
+/// is only passed on — never part of the URL, so it stays out of logs and out
+/// of the address bar.
+#[cfg(target_arch = "wasm32")]
+pub const DEFAULT_BASE_URL: &str = "/api";
+
 pub const ENDPOINT_PATH: &str = "/v1/systemone";
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -32,27 +65,45 @@ pub struct Reply {
     pub body: String,
 }
 
+/// `.env` is read once and its values land in the environment, so calling this
+/// again is cheap. There is no `.env` in a browser, and no file system to look
+/// for one in.
+fn load_dotenv() {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = dotenvy::dotenv();
+}
+
 pub struct Client {
     base_url: String,
     key: String,
 }
 
 impl Client {
-    /// Reads the key from `.env` or the environment. `None` means: play without
-    /// a model rather than asking the player for a key they may not have.
+    /// Reads the key from `.env` or the environment. `None` means there is none
+    /// there — the game then asks the player for one (`decisions::KeyPrompt`).
     pub fn from_env() -> Option<Self> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let _ = dotenvy::dotenv();
+        load_dotenv();
 
         let key = std::env::var("TYPESAFE_API_KEY")
             .ok()
             .map(|key| key.trim().to_string())
             .filter(|key| !key.is_empty())?;
 
+        Some(Self::with_key(key))
+    }
+
+    /// A key the player typed into the dialog. It lives in this struct and
+    /// nowhere else: nothing here writes it to a file, an environment variable
+    /// or a save game, so it is gone when the window closes. Typing it again
+    /// next time is the price of not storing a secret behind the player's back
+    /// — `.env` is there for anyone who would rather not.
+    pub fn with_key(key: String) -> Self {
+        load_dotenv();
+
         let base_url =
             std::env::var("TYPESAFE_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
 
-        Some(Self { base_url, key })
+        Self { base_url, key }
     }
 
     /// Fires the request and returns at once. The key never leaves this struct.

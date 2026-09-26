@@ -431,6 +431,28 @@ pub struct QueenOrder(pub String);
 #[derive(Resource, Default)]
 pub struct ColonyAwake(pub bool);
 
+/// The game started without a key, so the player is asked for one.
+///
+/// A key typed here holds for this one run. Nothing writes it down — not to
+/// `.env`, not to a save game, not into the process environment — so the next
+/// start asks again. That is the point: a secret the player handed over for one
+/// session should not outlive it behind their back. `.env` is the way to be
+/// spared the typing, and the browser has none — so on the web this dialog is
+/// always the way in. `ANTS.md` §5.2 wants `localStorage` there for a returning
+/// player; that is this, plus the storing, and the storing is the part still to
+/// be decided.
+#[derive(Resource, Default)]
+pub struct KeyPrompt {
+    /// While this is set the dialog is on screen and nothing behind it can be
+    /// clicked. Only a key clears it: there is no way past the dialog, because
+    /// what lies behind it without one is an empty board.
+    pub asking: bool,
+    /// What the dialog took, on its way to becoming a client. Set for one frame
+    /// and taken by `adopt_typed_key`; the key itself ends up in `Client` and
+    /// stays there.
+    pub entered: Option<String>,
+}
+
 /// Each ant thinks on its own clock. The offsets spread the requests evenly over
 /// the interval instead of firing all of them in the same frame.
 #[derive(Component)]
@@ -482,6 +504,7 @@ pub struct DecisionsPlugin {
 
 impl Plugin for DecisionsPlugin {
     fn build(&self, app: &mut App) {
+        let mut prompt = KeyPrompt::default();
         let source: Box<dyn DecisionSource> = match self.source {
             DecisionsFrom::Jev => match Client::from_env() {
                 Some(client) => {
@@ -489,17 +512,23 @@ impl Plugin for DecisionsPlugin {
                     Box::new(jev::JevSource::new(client))
                 }
                 None => {
-                    // No stand-in on purpose. A colony that kept working on
-                    // rules would hide what the model contributes, and this
-                    // game exists to show exactly that.
-                    warn!("no TYPESAFE_API_KEY — the colony will not move");
+                    // Asleep rather than a stand-in, on purpose. A colony that
+                    // kept working on rules would hide what the model
+                    // contributes, and this game exists to show exactly that.
+                    // It lasts only as long as the dialog: the first key typed
+                    // into it puts Jev in charge, without a restart.
+                    info!("no TYPESAFE_API_KEY — asking the player for one");
+                    prompt.asking = true;
                     Box::new(Asleep)
                 }
             },
+            // The baseline never asks for a key, and must not: a test that put
+            // a dialog on screen would be waiting for a player who is not there.
             DecisionsFrom::RulesForTesting => Box::new(rules::RuleSource::default()),
         };
 
         app.insert_resource(ActiveSource(source))
+            .insert_resource(prompt)
             .insert_resource(questions::Questions::load_or_default())
             .init_resource::<QueenOrder>()
             .init_resource::<ColonyAwake>()
@@ -508,6 +537,9 @@ impl Plugin for DecisionsPlugin {
             .add_systems(
                 Update,
                 (
+                    // Before the asking, so a key typed this frame is already
+                    // in hand when the ants are asked in it.
+                    adopt_typed_key.before(ThinkSet),
                     request_decisions.in_set(ThinkSet),
                     record_exchanges.in_set(RecordSet),
                 ),
@@ -529,6 +561,28 @@ type AntsToAsk<'w, 's> = Query<
         Option<&'static Intent>,
     ),
 >;
+
+/// Turns a key typed into the dialog into the live source, mid-game.
+///
+/// The colony was asleep because there was no key, not because it had been sent
+/// to bed: swapping the source is all it takes, and the first order then wakes
+/// it as it always would. Whether the key is any good is not checked here — a
+/// wrong one fails every request, and the lamp in the corner says so, which is
+/// the same answer a validation request would have given for the price of one.
+fn adopt_typed_key(mut prompt: ResMut<KeyPrompt>, mut source: ResMut<ActiveSource>) {
+    // Read through the immutable side first. Touching a `ResMut` marks it
+    // changed, and this runs every frame of every game, key or no key.
+    if prompt.entered.is_none() {
+        return;
+    }
+    let Some(key) = prompt.entered.take() else {
+        return;
+    };
+
+    info!("a key was typed in — decisions come from Jev from here on");
+    source.0 = Box::new(jev::JevSource::new(Client::with_key(key)));
+    prompt.asking = false;
+}
 
 fn request_decisions(
     time: Res<Time>,
@@ -669,7 +723,11 @@ impl DecisionSource for Asleep {
     }
 
     fn link(&self) -> Link {
-        Link::Down("no TYPESAFE_API_KEY — put one in .env and restart".to_string())
+        Link::Down(
+            "no API key yet — the dialog is waiting for one, or put it in .env as \
+             TYPESAFE_API_KEY and be spared the asking"
+                .to_string(),
+        )
     }
 }
 
@@ -688,6 +746,43 @@ mod tests {
             "the detail must name what is missing, got: {}",
             link.detail()
         );
+    }
+
+    /// The point of the dialog: a key typed after the game has started puts the
+    /// model in charge without a restart. No request goes out here — a source
+    /// only asks when `request_decisions` runs, and that system is not in this
+    /// app.
+    #[test]
+    fn a_typed_key_puts_jev_in_charge() {
+        let mut app = App::new();
+        app.insert_resource(ActiveSource(Box::new(Asleep)))
+            .insert_resource(KeyPrompt {
+                asking: true,
+                entered: Some("not-a-real-key".to_string()),
+            })
+            .add_systems(Update, adopt_typed_key);
+
+        app.update();
+
+        let prompt = app.world().resource::<KeyPrompt>();
+        assert!(!prompt.asking, "the dialog closes once the key is in hand");
+        assert!(
+            prompt.entered.is_none(),
+            "and the key does not stay lying about in a resource — the client has it"
+        );
+        assert_eq!(app.world().resource::<ActiveSource>().0.name(), "Jev");
+    }
+
+    /// The baseline runs in tests and in `--compare`, where nobody is watching
+    /// the screen. A dialog there would wait for a player who is not there.
+    #[test]
+    fn the_baseline_never_asks_for_a_key() {
+        let mut app = App::new();
+        app.add_plugins(DecisionsPlugin {
+            source: DecisionsFrom::RulesForTesting,
+        });
+
+        assert!(!app.world().resource::<KeyPrompt>().asking);
     }
 
     /// A source that never touches a network has nothing to report about one.

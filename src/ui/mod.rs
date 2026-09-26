@@ -1,5 +1,6 @@
 pub mod hud;
 pub mod inspector;
+pub mod key_prompt;
 pub mod lab;
 pub mod queen_input;
 
@@ -10,7 +11,9 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use crate::ants::components::{AntId, LastDecision, LastExchange};
 use crate::config::CELL_SIZE;
 use crate::decisions::questions::Questions;
-use crate::decisions::{ActiveSource, ColonyAwake, DecisionStats, DiscardLog, QueenOrder};
+use crate::decisions::{
+    ActiveSource, ColonyAwake, DecisionStats, DiscardLog, KeyPrompt, QueenOrder,
+};
 use crate::level::{Choice, Chosen, Levels};
 use crate::world::fruit::Fruit;
 use crate::world::grid::Grid;
@@ -19,6 +22,7 @@ use crate::world::render::View;
 use crate::world::scenario::{Scenario, Solved};
 
 use inspector::Selected;
+use key_prompt::KeyDraft;
 use lab::QuestionDraft;
 use queen_input::{OrderChange, OrderDraft, OrderHistory, Task};
 
@@ -69,6 +73,7 @@ impl Plugin for UiPlugin {
             .insert_resource(draft)
             .init_resource::<OrderDraft>()
             .init_resource::<OrderHistory>()
+            .init_resource::<KeyDraft>()
             .init_resource::<DebugLayer>()
             .init_resource::<LabOpen>()
             .init_resource::<Selected>()
@@ -129,16 +134,33 @@ struct LabState<'w> {
     log: Res<'w, DiscardLog>,
 }
 
+/// What the top bar reads, and the one switch that belongs to the board rather
+/// than to a panel. Grouped because the bar is the only reader of all of them.
+#[derive(SystemParam)]
+struct Readout<'w> {
+    stats: Res<'w, DecisionStats>,
+    source: Res<'w, ActiveSource>,
+    layer: Res<'w, DebugLayer>,
+}
+
+/// The key dialog: whether it is being asked for, and what is being typed into
+/// it. The first belongs to the decision layer — it is the one that knows there
+/// is no key — and the second only to the screen.
+#[derive(SystemParam)]
+struct KeyState<'w> {
+    prompt: ResMut<'w, KeyPrompt>,
+    draft: ResMut<'w, KeyDraft>,
+}
+
 /// One root `Ui` for the whole frame. egui 0.36 hangs panels off a `Ui`, and two
 /// independent roots would each lay out as if the other were not there.
 fn draw(
     mut contexts: EguiContexts,
     mut orders: OrderState,
-    stats: Res<DecisionStats>,
-    layer: Res<DebugLayer>,
-    source: Res<ActiveSource>,
+    readout: Readout,
     mut colony: ColonyState,
     mut bench: LabState,
+    mut key: KeyState,
 ) -> Result {
     let ctx = contexts.ctx_mut()?.clone();
     let mut viewport = egui::Ui::new(
@@ -149,15 +171,28 @@ fn draw(
             .max_rect(ctx.viewport_rect()),
     );
 
+    // Before everything else, because until it is answered everything else is
+    // scenery: the queen could type, and no ant would ask anyone about it. The
+    // dialog has no way out but a key, so the board behind it stays out of
+    // reach until there is one.
+    if key.prompt.asking
+        && let Some(typed) = key_prompt::dialog(&ctx, &mut key.draft)
+    {
+        // Picked up next frame by `decisions::adopt_typed_key`, which is the
+        // only place that may hold a key. The dialog closes there too, so it
+        // stays open until the client really exists.
+        key.prompt.entered = Some(typed);
+    }
+
     hud::top_bar(
         &mut viewport,
         &hud::ModelState {
-            stats: &stats,
-            source: source.0.name(),
+            stats: &readout.stats,
+            source: readout.source.0.name(),
             awake: orders.awake.0,
-            link: &source.0.link(),
+            link: &readout.source.0.link(),
         },
-        layer.0,
+        readout.layer.0,
         colony.stores.0,
         colony.fruits.iter().count(),
     );
@@ -233,7 +268,7 @@ fn draw(
     // information.
     hud::compass(&mut viewport, &colony.view, *colony.grid);
 
-    if layer.0 {
+    if readout.layer.0 {
         hud::intent_overlay(&mut viewport, &colony.view, &colony.ants);
     }
 

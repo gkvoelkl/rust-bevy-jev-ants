@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ant Colony — an order, and twenty ants reading it</title>
+    <meta
+      name="description"
+      content="Every ant asks TypeSafe Jev what to do next. You are the queen, and all you can do is say something."
+    />
+
+    <link data-trunk rel="rust" data-wasm-opt="z" />
+
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #101014;
+        color: #c8ccd6;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        overflow: hidden;
+      }
+
+      /* The canvas sits on top and is transparent until the first frame is
+         drawn, so the note below shows through the wait and disappears the
+         moment there is a board — no script needed to take it away. */
+      #board {
+        position: fixed;
+        inset: 0;
+      }
+
+      #board canvas {
+        position: absolute;
+        inset: 0;
+        display: block;
+        z-index: 1;
+        outline: none;
+      }
+
+      #loading {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 1.5rem;
+      }
+
+      #loading h1 {
+        margin: 0;
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: #e4e7ee;
+      }
+
+      #loading p {
+        margin: 0;
+        max-width: 30rem;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        color: #878d9c;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="loading">
+      <h1>Ant Colony</h1>
+      <p>
+        Loading a few megabytes of colony. It will ask for your TypeSafe key
+        when it is ready — that key is used for this one visit and is never
+        stored.
+      </p>
+    </div>
+
+    <!-- Bevy is told to take this canvas by its id, and to keep it the size of
+         this box, which is the whole viewport. `tabindex` makes it something
+         the page can focus: the game no longer swallows every browser
+         shortcut (see `prevent_default_event_handling` in main.rs), so the
+         canvas has to be able to hold and take back the keyboard on a click. -->
+    <div id="board"><canvas id="game" tabindex="0"></canvas></div>
+  </body>
+</html>

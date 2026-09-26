@@ -1,0 +1,6 @@
+# Web builds only. `getrandom` refuses to compile for wasm32 without being told
+# which source of randomness the browser offers, and this is the way it wants
+# to be told — a cfg flag rather than a feature, so it cannot be turned on by
+# accident from a dependency. Native builds are untouched.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

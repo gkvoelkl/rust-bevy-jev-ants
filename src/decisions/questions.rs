@@ -11,10 +11,18 @@ use serde::Deserialize;
 /// Where the texts are read from, relative to the working directory.
 pub const QUESTIONS_PATH: &str = "assets/questions.ron";
 
-/// The fallback, compiled in. Used when the file is missing or unreadable, and
-/// in the browser, where there is no file system to read.
+/// The fallback, compiled in. Used when the file is missing or unreadable —
+/// including a file that has been edited into something that will not parse,
+/// which is a thing that happens while wording is being worked on.
 pub const DEFAULT_STEP: &str = "Which single step should this ant take now? \
      Follow the ant queen's order whenever it applies.";
+
+/// The file as it is on disk, compiled into the binary for the browser, which
+/// has none. It is the same text either way — `the_web_build_ships_the_text_on
+/// _disk` sees to that — so rewording the file changes both builds, and only
+/// the native one picks it up without a rebuild.
+#[cfg(any(target_arch = "wasm32", test))]
+const BUILT_IN: &str = include_str!("../../assets/questions.ron");
 
 /// The question texts in force right now.
 #[derive(Resource, Clone, Deserialize)]
@@ -37,24 +45,22 @@ impl Questions {
     /// a broken file means the compiled-in text and a line in the log, not a
     /// colony that will not start.
     pub fn load() -> Result<Self, String> {
+        // No file system in the browser, so the copy that was compiled in
+        // stands in for it. Rewording still works there — it happens in the
+        // field in the game — it simply does not outlive the tab.
         #[cfg(target_arch = "wasm32")]
-        {
-            // No file system in the browser. The texts ship compiled in, and
-            // rewording happens in the field in the game.
-            Err("no file system in the browser".to_string())
-        }
+        let text = BUILT_IN.to_string();
 
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let text = std::fs::read_to_string(QUESTIONS_PATH)
-                .map_err(|error| format!("{QUESTIONS_PATH}: {error}"))?;
-            let parsed: Questions =
-                ron::from_str(&text).map_err(|error| format!("{QUESTIONS_PATH}: {error}"))?;
-            if parsed.step.trim().is_empty() {
-                return Err(format!("{QUESTIONS_PATH}: the step question is empty"));
-            }
-            Ok(parsed)
+        let text = std::fs::read_to_string(QUESTIONS_PATH)
+            .map_err(|error| format!("{QUESTIONS_PATH}: {error}"))?;
+
+        let parsed: Questions =
+            ron::from_str(&text).map_err(|error| format!("{QUESTIONS_PATH}: {error}"))?;
+        if parsed.step.trim().is_empty() {
+            return Err(format!("{QUESTIONS_PATH}: the step question is empty"));
         }
+        Ok(parsed)
     }
 
     /// What the game starts with: the file when it reads, the compiled-in text
@@ -83,6 +89,15 @@ mod tests {
     fn the_shipped_file_reads() {
         let questions = Questions::load().expect("assets/questions.ron parses");
         assert!(!questions.step.trim().is_empty());
+    }
+
+    /// The browser plays on the copy. If it has drifted from the file, the two
+    /// builds ask Jev different questions and every measurement taken on one
+    /// stops holding for the other.
+    #[test]
+    fn the_web_build_ships_the_text_on_disk() {
+        let on_disk = std::fs::read_to_string(QUESTIONS_PATH).expect("the file is there");
+        assert_eq!(on_disk, BUILT_IN);
     }
 
     #[test]
