@@ -15,4 +15,7 @@
 # Finder leaves these in every directory it is asked to look at.
 .DS_Store
 
+# What wrangler remembers about the account it deployed the Worker to.
+.wrangler/
+
 CLAUDE.md
