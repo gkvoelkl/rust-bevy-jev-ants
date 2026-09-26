@@ -75,8 +75,8 @@ it, so the link at the top of this page is always the current game. The 40 MB of
 WebAssembly is built there and never committed — a binary that size in the history would
 be paid for on every clone, forever.
 
-A first visit pulls the whole colony down: 38 MB of WebAssembly, around 12 MB of it if
-the host compresses on the way.
+A first visit pulls the whole colony down: 38 MB of WebAssembly, 12.5 MB of it over the
+wire — Pages serves `application/wasm` gzipped, measured 2026-09-26.
 
 Pages serves files and nothing else, though, so the rule above has nowhere to live: there
 is no `/api` on that origin to forward anything. The proxy therefore stands on its own,
