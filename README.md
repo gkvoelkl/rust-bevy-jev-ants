@@ -4,6 +4,10 @@ An ant colony where every ant asks [TypeSafe Jev](https://docs.typesafe.ai/intro
 what to do next. You are the queen, and your only control is a text field: you type a
 sentence, and twenty ants each decide for themselves what it means for them.
 
+**▶ [Play it in the browser](https://gkvoelkl.github.io/rust-bevy-jev-ants/)** — bring
+your own [TypeSafe key](https://console.typesafe.ai/keys); the page asks for it and uses
+it for that one visit. Without a key nothing moves, and that is on purpose.
+
 ![Level 1: eight ants fetching fruit, each label an intent from Jev](/docs/screenshot.png)
 
 Above every ant is the intent it chose and how sure the model was — green when it is
@@ -51,7 +55,7 @@ too, and refuses one it does not know — and a browser attaches `Origin` to eve
 the thing that forwards has to drop that header, which `Trunk.toml` cannot; that is all
 `tools/dev-proxy.py` does.
 
-A deployment needs neither command, just one rule in its web server: forward
+A deployment with a web server of its own needs neither command, just one rule: forward
 `/api` and drop the `Origin` header while doing it (nginx: `proxy_pass` plus
 `proxy_set_header Origin "";`). Nothing in the game changes. The key travels in the
 `Authorization` header, is only passed through, and is never stored at either end.
@@ -63,6 +67,38 @@ trunk build --release         # just the bundle, in dist/
 The bundle is 38 MB, about 12 MB over the wire once the server compresses it — serve it
 with gzip or brotli on. Bevy's 3D pipeline and audio stack are switched off in
 `Cargo.toml`, since this game is sprites and text; that alone was 9 MB.
+
+### On GitHub Pages
+
+`.github/workflows/pages.yml` builds the bundle on every push to `master` and publishes
+it, so the link at the top of this page is always the current game. The 40 MB of
+WebAssembly is built there and never committed — a binary that size in the history would
+be paid for on every clone, forever.
+
+A first visit pulls the whole colony down: 38 MB of WebAssembly, around 12 MB of it if
+the host compresses on the way.
+
+Pages serves files and nothing else, though, so the rule above has nowhere to live: there
+is no `/api` on that origin to forward anything. The proxy therefore stands on its own,
+as a Cloudflare Worker — `tools/worker.js`, about twenty lines, free plan, no card. Being
+on another origin it has to answer the CORS preflight itself as well, which it can,
+since it is ours.
+
+```sh
+cd tools && npx wrangler deploy                             # prints the Worker's URL
+gh variable set ANTS_API_BASE --body https://….workers.dev  # the build reads it
+gh workflow run "Play it on Pages"
+```
+
+`ANTS_API_BASE` is baked into the bundle at build time by `api::DEFAULT_BASE_URL`, and it
+is the only difference between the deployed game and the one `trunk serve` builds. A
+build without it stops with a message rather than deploying a board that loads, asks for
+a key and then fails every request.
+
+The Worker forwards one path and holds nothing: no key of its own, no state, and no log
+of what passes through. The player's key still travels through someone else's machine on
+its way to the API, which is worth knowing before typing it into a hosted page — running
+the game locally keeps it between the terminal and `api.typesafe.ai`.
 
 ## Playing
 

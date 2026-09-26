@@ -1,0 +1,14 @@
+# The deployment of `worker.js`. Run from this directory:
+#
+#     npx wrangler deploy
+#
+# The free plan is enough and asks for no card. What it gives is 100,000
+# requests a day, and one ant asks roughly twice a minute — twenty ants come to
+# around 2,400 an hour, so the quota is about forty hours of play a day across
+# everyone. A page that is never opened costs nothing.
+name = "ants-api"
+main = "worker.js"
+compatibility_date = "2026-09-26"
+
+# Nothing to configure and nothing to store: the Worker keeps no state, holds no
+# key, and reads no secret. Everything it needs arrives in the request.

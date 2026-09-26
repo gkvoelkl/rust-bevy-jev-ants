@@ -101,6 +101,23 @@ pub fn dialog(ctx: &egui::Context, draft: &mut KeyDraft) -> Option<String> {
                 .weak(),
             );
 
+            // Said here because it is true here and nowhere else. A page cannot
+            // reach the API itself, so the key takes a detour through whatever
+            // serves this game, and a player deciding whether to paste a secret
+            // should not have to read the README to find that out. Running the
+            // game from a checkout keeps the key between the terminal and the
+            // API — `api::DEFAULT_BASE_URL`.
+            #[cfg(target_arch = "wasm32")]
+            ui.label(
+                egui::RichText::new(
+                    "In the browser it also passes through this site's proxy on its way \
+                     to the API. The proxy only forwards and stores nothing — but it is \
+                     someone else's machine, and running the game locally avoids it.",
+                )
+                .small()
+                .weak(),
+            );
+
             given
         })
         .inner

@@ -1,0 +1,83 @@
+# Builds the web bundle and puts it on GitHub Pages, so the game can be played
+# from a link instead of a checkout.
+#
+# Built here rather than committed: `trunk build --release` produces about 40 MB
+# of WebAssembly, and a binary that large in the history would be paid for on
+# every clone, forever, for a file nobody reads.
+name: Play it on Pages
+
+on:
+  push:
+    branches: [master]
+  # So a rebuild can be asked for after the proxy URL changes, without an empty
+  # commit to trigger it.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and the newer one wins: a queue of half-finished
+# colonies helps nobody.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The bundle is useless without it. A page served from Pages has no `/api`
+      # on its own origin — nothing there forwards anything — so a build without
+      # this variable would deploy a board that loads, asks for a key, and then
+      # fails every single request. Better to stop here and say why.
+      - name: The proxy has to be known
+        run: |
+          if [ -z "${{ vars.ANTS_API_BASE }}" ]; then
+            echo "::error::ANTS_API_BASE is not set. Deploy tools/worker.js" \
+                 "(cd tools && npx wrangler deploy) and then:" \
+                 "gh variable set ANTS_API_BASE --body https://….workers.dev"
+            exit 1
+          fi
+
+      - name: Rust, for the browser
+        run: rustup target add wasm32-unknown-unknown
+
+      # Bevy takes minutes to compile from cold. Cached, a rebuild after a
+      # one-line change is under one.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32
+
+      - uses: jetli/trunk-action@v0.5.1
+        with:
+          version: latest
+
+      # `--public-url` because Pages serves the repository from a folder, not
+      # from the root of the domain: without it the page asks for /…_bg.wasm and
+      # gets a 404 page instead of a colony.
+      #
+      # `ANTS_API_BASE` is read at compile time by `api::DEFAULT_BASE_URL`, and
+      # it is the only difference between this bundle and the one that
+      # `trunk serve` builds for the proxy next door.
+      - name: Build
+        env:
+          ANTS_API_BASE: ${{ vars.ANTS_API_BASE }}
+        run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

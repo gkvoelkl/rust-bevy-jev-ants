@@ -41,12 +41,27 @@ pub const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
 /// `tools/dev-proxy.py` while developing, `proxy_set_header Origin "";` or its
 /// equivalent in a deployment.
 ///
-/// A relative URL rather than a configured host, because the proxy then *is*
-/// the configuration. The player's key rides in the `Authorization` header and
-/// is only passed on — never part of the URL, so it stays out of logs and out
-/// of the address bar.
+/// A relative URL rather than a configured host, because where the page is
+/// served by something that can forward, the proxy *is* the configuration. The
+/// player's key rides in the `Authorization` header and is only passed on —
+/// never part of the URL, so it stays out of logs and out of the address bar.
+///
+/// `ANTS_API_BASE` at build time points the bundle somewhere else, which is
+/// what a static host needs: GitHub Pages serves files and nothing more, so
+/// there is no `/api` on its origin to forward anything. The Pages workflow
+/// sets this to the standalone proxy (`tools/worker.js`), and because that
+/// proxy then lives on another origin, it has to answer the preflight itself —
+/// which it can, being ours. `trunk serve` sets nothing and keeps using
+/// `tools/dev-proxy.py` next door.
+///
+/// Read at compile time, and cargo does not watch environment variables: after
+/// changing it by hand, `touch src/api/mod.rs`. In CI the build is fresh
+/// anyway.
 #[cfg(target_arch = "wasm32")]
-pub const DEFAULT_BASE_URL: &str = "/api";
+pub const DEFAULT_BASE_URL: &str = match option_env!("ANTS_API_BASE") {
+    Some(url) => url,
+    None => "/api",
+};
 
 pub const ENDPOINT_PATH: &str = "/v1/systemone";
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
