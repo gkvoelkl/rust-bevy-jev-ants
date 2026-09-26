@@ -9,8 +9,16 @@ name: Play it on Pages
 on:
   push:
     branches: [master]
-  # So a rebuild can be asked for after the proxy URL changes, without an empty
-  # commit to trigger it.
+    # None of these reach the bundle, and a rebuild costs nine minutes and
+    # 40 MB of artifact to deploy a page that came out identical. The list is
+    # deliberately short: anything not named here does get built, which is the
+    # safe way round — a file wrongly left out would quietly stop deploying.
+    paths-ignore:
+      - "README.md"
+      - "LICENSE"
+      - "docs/**"
+  # So a rebuild can be asked for after the proxy URL changes, or after a
+  # skipped push turns out to have needed one, without an empty commit.
   workflow_dispatch:
 
 permissions:
